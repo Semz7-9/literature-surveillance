@@ -20,6 +20,8 @@ from tenacity import (
     retry_if_exception_type,
 )
 
+from ..core.models import normalize_doi
+
 
 class CrossrefAdapter:
     """Crossref API 适配器"""
@@ -79,8 +81,8 @@ class CrossrefAdapter:
         Raises:
             httpx.HTTPStatusError: 如果 DOI 不存在或 API 错误
         """
-        # 清理 DOI
-        doi = doi.replace("https://doi.org/", "").replace("http://doi.org/", "")
+        # 规范化 DOI（大小写、URL 前缀、空白）
+        doi = normalize_doi(doi)
 
         await self._wait_for_rate_limit()
 
@@ -148,18 +150,29 @@ def parse_crossref_metadata(crossref_work: dict) -> dict:
         journal = crossref_work["container-title"][0]
 
     # 日期
+    # Crossref 的 date-parts 精度不一致（可能只给年，或年+月）。
+    # publication_date 是按精度补全到该单位第一天的派生值，仅用于排序/展示；
+    # raw_date_parts + publication_date_precision 保留真实精度，不能让
+    # "2024" 悄悄变成看起来像确切知道的"2024-01-01"。
     publication_date = None
+    publication_date_precision = None
+    raw_date_parts = None
     if "published" in crossref_work:
-        date_parts = crossref_work["published"].get("date-parts", [[]])[0]
-        if len(date_parts) >= 3:
-            publication_date = datetime(date_parts[0], date_parts[1], date_parts[2])
-        elif len(date_parts) == 2:
-            publication_date = datetime(date_parts[0], date_parts[1], 1)
-        elif len(date_parts) == 1:
-            publication_date = datetime(date_parts[0], 1, 1)
+        raw_date_parts = crossref_work["published"].get("date-parts", [[]])[0]
+        if len(raw_date_parts) >= 3:
+            publication_date = datetime(raw_date_parts[0], raw_date_parts[1], raw_date_parts[2])
+            publication_date_precision = "day"
+        elif len(raw_date_parts) == 2:
+            publication_date = datetime(raw_date_parts[0], raw_date_parts[1], 1)
+            publication_date_precision = "month"
+        elif len(raw_date_parts) == 1:
+            publication_date = datetime(raw_date_parts[0], 1, 1)
+            publication_date_precision = "year"
 
-    # DOI
+    # DOI（规范化，避免大小写/URL 前缀造成的重复实体）
     doi = crossref_work.get("DOI")
+    if doi:
+        doi = normalize_doi(doi)
 
     # Abstract (如果有)
     abstract = crossref_work.get("abstract")
@@ -190,6 +203,8 @@ def parse_crossref_metadata(crossref_work: dict) -> dict:
         "authors": authors,
         "journal": journal,
         "publication_date": publication_date,
+        "publication_date_precision": publication_date_precision,
+        "raw_date_parts": raw_date_parts,
         "doi": doi,
         "abstract": abstract,
         "other_ids": other_ids,

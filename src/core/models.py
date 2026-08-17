@@ -28,6 +28,20 @@ class Base(DeclarativeBase):
     pass
 
 
+def normalize_doi(raw: str) -> str:
+    """DOI 规范化：统一大小写、去除 URL 前缀和空白
+
+    所有入库/查询路径必须先经过这个函数，否则同一篇文献的
+    'https://doi.org/10.1038/X'、'10.1038/x'、' 10.1038/X ' 会被当成不同实体。
+    """
+    doi = raw.strip()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+        if doi.lower().startswith(prefix):
+            doi = doi[len(prefix):]
+            break
+    return doi.strip().lower()
+
+
 # ============================================================================
 # Evidence & Status Enums
 # ============================================================================
@@ -68,13 +82,23 @@ class ClaimStatus(str, Enum):
 
 
 class IdentityEvidenceType(str, Enum):
-    """Work identity 判断的证据类型"""
+    """Work identity 判断的证据类型
 
+    每个值描述实际发生的证据，不能脱离具体判断场景复用：
+    - DOI_EXACT: 该 DOI 已经在某个 Work 下注册过（同一个标识符）
+    - EXPLICIT_CROSSREF_RELATION: Crossref relation 字段显式声明了版本/预印本关系
+    - PUBLISHER_RELATION: 出版商元数据（非 Crossref relation）声明的关系
+    - TITLE_AUTHOR_YEAR: 标题 + 第一作者（+年份）模糊匹配
+    - NEW_WORK: 未匹配到任何已有 Work，新建
+    - MANUAL_CONFIRMATION: 人工审核后确认
+    """
+
+    DOI_EXACT = "DOI_EXACT"
     EXPLICIT_CROSSREF_RELATION = "EXPLICIT_CROSSREF_RELATION"
     PUBLISHER_RELATION = "PUBLISHER_RELATION"
-    EXACT_TITLE_AUTHOR_MATCH = "EXACT_TITLE_AUTHOR_MATCH"
-    FUZZY_METADATA_MATCH = "FUZZY_METADATA_MATCH"
-    HUMAN_CONFIRMED = "HUMAN_CONFIRMED"
+    TITLE_AUTHOR_YEAR = "TITLE_AUTHOR_YEAR"
+    NEW_WORK = "NEW_WORK"
+    MANUAL_CONFIRMATION = "MANUAL_CONFIRMATION"
 
 
 class IdentityStatus(str, Enum):
@@ -140,7 +164,13 @@ class Record(Base):
     title: Mapped[str] = mapped_column(Text)
     authors: Mapped[dict] = mapped_column(JSON)  # [{name, affiliation, orcid}, ...]
     journal: Mapped[Optional[str]] = mapped_column(String(255))
+    # publication_date 是 raw_date_parts 按 precision 补全后的派生值，仅用于排序/展示，
+    # 不能反过来当作"我们确切知道这一天发表"的证据
     publication_date: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    publication_date_precision: Mapped[Optional[str]] = mapped_column(
+        String(8)
+    )  # day, month, year
+    raw_date_parts: Mapped[Optional[list]] = mapped_column(JSON)  # Crossref date-parts 原样保留
     doi: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True)
 
     # Abstract
@@ -256,8 +286,8 @@ class Claim(Base):
     location: Mapped[Optional[str]] = mapped_column(Text)  # section, page, paragraph
     source_evidence_level: Mapped[str] = mapped_column(String(2))
 
-    # 状态
-    status: Mapped[str] = mapped_column(String(32), default=ClaimStatus.VALID.value)
+    # 状态：新提取的 Claim 默认未验证，只有人工/规则/验证流程可以升为 VALID
+    status: Mapped[str] = mapped_column(String(32), default=ClaimStatus.UNVERIFIED.value)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

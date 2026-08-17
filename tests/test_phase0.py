@@ -21,8 +21,10 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
+from sqlalchemy import select
+
 from src.core.database import Database
-from src.core.models import Record, EvidenceLevel, PublicationStatus
+from src.core.models import Record, Work, EvidenceLevel, PublicationStatus, normalize_doi
 from src.core.work_identity import WorkIdentityResolver
 from src.core.config import load_config
 from src.core.ingestion import get_or_create_record
@@ -89,15 +91,19 @@ async def test_work_resolution(db: Database, crossref: CrossrefAdapter):
                 continue
 
             # 使用 get_or_create_record 处理重复 DOI
+            normalized_doi = normalize_doi(doi)
+
             def record_factory():
                 return Record(
-                    record_id=f"R_{doi.replace('/', '_')}",
-                    work_id=None,  # 将由 resolver 设置
+                    record_id=f"R_{normalized_doi.replace('/', '_')}",
+                    work_id=None,  # 只有 confirmed edge 才会回填，见下面 materialize_if_confirmed
                     title=metadata["title"],
                     authors=metadata["authors"],
                     journal=metadata["journal"],
                     publication_date=metadata["publication_date"],
-                    doi=doi,
+                    publication_date_precision=metadata["publication_date_precision"],
+                    raw_date_parts=metadata["raw_date_parts"],
+                    doi=normalized_doi,
                     abstract=metadata["abstract"],
                     evidence_level=(
                         EvidenceLevel.E1.value if metadata["abstract"] else EvidenceLevel.E0.value
@@ -112,13 +118,21 @@ async def test_work_resolution(db: Database, crossref: CrossrefAdapter):
                 print(f"  Record already exists: {record.record_id}")
                 continue
 
-            # 解析 Work
-            work = await resolver.resolve_or_create_work(record, relations)
-            record.work_id = work.id
+            # 解析 identity edge（不一定是 confirmed，可能需要人工审核）
+            edge = await resolver.resolve_or_create_work(record, relations)
+            materialized = await resolver.materialize_if_confirmed(record, edge)
+
+            work_stmt = select(Work).where(Work.id == edge.target_work_id)
+            work = (await session.execute(work_stmt)).scalar_one()
 
             print(f"  Work ID: {work.work_id}")
             print(f"  Canonical DOI: {work.canonical_doi}")
-            print(f"  Evidence: Check identity_edges table")
+            print(f"  Edge status: {edge.status} (evidence: {edge.evidence_type})")
+            print(
+                f"  Materialized: {materialized}"
+                if materialized
+                else "  Materialized: False (awaiting manual review)"
+            )
 
         await session.commit()
 
@@ -135,10 +149,14 @@ async def test_l1_generation(db: Database, llm_client):
     print("\n=== Test 3: L1 Generation ===")
 
     async with db.get_session() as session:
-        # 获取有 abstract 的 records
-        from sqlalchemy import select
-
-        stmt = select(Record).where(Record.evidence_level == EvidenceLevel.E1.value)
+        # 获取有 abstract 且 Work identity 已经 confirmed 的 records。
+        # work_id 为 None 说明 identity 还在等人工审核，不应该在这个阶段产出 L1 卡片
+        # （否则我们会为一个尚未确认的身份生成内容，一旦身份判断被 reject，
+        # 这份卡片就变成挂在错误对象上的孤儿数据）。
+        stmt = select(Record).where(
+            Record.evidence_level == EvidenceLevel.E1.value,
+            Record.work_id.is_not(None),
+        )
         result = await session.execute(stmt)
         records = result.scalars().all()
 
@@ -179,8 +197,6 @@ async def test_markdown_export(db: Database):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     async with db.get_session() as session:
-        from sqlalchemy import select
-
         stmt = select(Record).limit(3)
         result = await session.execute(stmt)
         records = result.scalars().all()

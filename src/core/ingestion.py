@@ -9,7 +9,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Record
+from .models import Record, normalize_doi
 
 
 async def get_record_by_doi(session: AsyncSession, doi: str) -> Optional[Record]:
@@ -18,12 +18,12 @@ async def get_record_by_doi(session: AsyncSession, doi: str) -> Optional[Record]
 
     Args:
         session: 数据库 session
-        doi: DOI
+        doi: DOI（任意大小写/URL 形式，内部会 normalize 后再查询）
 
     Returns:
         已存在的 Record，如果不存在则返回 None
     """
-    stmt = select(Record).where(Record.doi == doi)
+    stmt = select(Record).where(Record.doi == normalize_doi(doi))
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -38,8 +38,10 @@ async def get_or_create_record(
 
     Args:
         session: 数据库 session
-        doi: DOI
-        record_factory: 无参可调用对象，返回新的 Record 实例（尚未 add 到 session）
+        doi: DOI（任意大小写/URL 形式）
+        record_factory: 无参可调用对象，返回新的 Record 实例（尚未 add 到 session）。
+            factory 内部设置的 record.doi 必须已经是 normalize_doi() 之后的值——
+            这里不会代为纠正，因为 factory 往往还需要用同一个值构造 record_id 等字段。
 
     Returns:
         (record, created) - created 为 True 表示是新创建的
