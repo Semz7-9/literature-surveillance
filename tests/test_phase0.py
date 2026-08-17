@@ -24,7 +24,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 from sqlalchemy import select
 
 from src.core.database import Database
-from src.core.models import Record, Work, EvidenceLevel, PublicationStatus, normalize_doi
+from src.core.models import Record, Work, EvidenceLevel, PublicationStatus
 from src.core.work_identity import WorkIdentityResolver
 from src.core.config import load_config
 from src.core.ingestion import get_or_create_record
@@ -91,9 +91,8 @@ async def test_work_resolution(db: Database, crossref: CrossrefAdapter):
                 continue
 
             # 使用 get_or_create_record 处理重复 DOI
-            normalized_doi = normalize_doi(doi)
-
-            def record_factory():
+            # normalized_doi 由 get_or_create_record 统一计算并传入，factory 不再自己算
+            def record_factory(normalized_doi: str):
                 return Record(
                     record_id=f"R_{normalized_doi.replace('/', '_')}",
                     work_id=None,  # 只有 confirmed edge 才会回填，见下面 materialize_if_confirmed

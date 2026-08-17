@@ -20,6 +20,7 @@ from sqlalchemy import (
     ForeignKey,
     JSON,
     Index,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -214,6 +215,9 @@ class WorkIdentifier(Base):
     work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), index=True)
 
     identifier_type: Mapped[str] = mapped_column(String(32))  # doi, pmid, pmcid, arxiv, etc.
+    # 调用方负责在写入前 normalize；目前只有 doi 有 normalize_doi() 保证。
+    # pmid/pmcid/arxiv 等其他 type 暂未定义各自的 canonicalization 规则，
+    # 在那之前 unique 约束只对已经 normalize 的 identifier_type 真正有意义。
     identifier_value: Mapped[str] = mapped_column(String(255), index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -222,7 +226,9 @@ class WorkIdentifier(Base):
     work: Mapped["Work"] = relationship(back_populates="identifiers")
 
     __table_args__ = (
-        Index("ix_work_identifiers_type_value", "identifier_type", "identifier_value"),
+        UniqueConstraint(
+            "identifier_type", "identifier_value", name="uq_work_identifier_type_value"
+        ),
     )
 
 

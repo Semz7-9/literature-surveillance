@@ -39,18 +39,21 @@ async def get_or_create_record(
     Args:
         session: 数据库 session
         doi: DOI（任意大小写/URL 形式）
-        record_factory: 无参可调用对象，返回新的 Record 实例（尚未 add 到 session）。
-            factory 内部设置的 record.doi 必须已经是 normalize_doi() 之后的值——
-            这里不会代为纠正，因为 factory 往往还需要用同一个值构造 record_id 等字段。
+        record_factory: 接受一个位置参数 normalized_doi 的可调用对象，返回新的
+            Record 实例（尚未 add 到 session）。normalized_doi 由本函数统一计算并
+            传入——factory 不需要（也不应该）自己再调用 normalize_doi()，这样
+            "DOI 必须先 normalize 才能入库"这个约束由唯一的调用点保证，而不是
+            靠每个 factory 的作者自觉遵守。
 
     Returns:
         (record, created) - created 为 True 表示是新创建的
     """
-    existing = await get_record_by_doi(session, doi)
+    normalized_doi = normalize_doi(doi)
+    existing = await get_record_by_doi(session, normalized_doi)
     if existing:
         return existing, False
 
-    record = record_factory()
+    record = record_factory(normalized_doi)
     session.add(record)
     await session.flush()
     return record, True

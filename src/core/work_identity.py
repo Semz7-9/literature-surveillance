@@ -25,6 +25,7 @@ from ..core.models import (
     IdentityEdge,
     IdentityEvidenceType,
     IdentityStatus,
+    normalize_doi,
 )
 
 
@@ -113,6 +114,7 @@ class WorkIdentityResolver:
                 for related in relations[relation_type]:
                     related_doi = related.get("id")
                     if related_doi:
+                        related_doi = normalize_doi(related_doi)
                         work = await self._find_work_by_identifier("doi", related_doi)
                         if work:
                             return await self._create_identity_edge(

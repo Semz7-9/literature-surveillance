@@ -51,3 +51,9 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# test_phase0.py 是端到端 smoke demo（调真实 Crossref/LLM API），用
+# `python -m tests.test_phase0` 手动运行，不是 pytest unit test —— 它的
+# test_* 函数接受 crossref/db/llm_client 等位置参数，pytest 会把它们误认成
+# fixture 请求从而报 collection error。真正的 regression test 在
+# test_identity_resolution.py 等文件里。
+addopts = "--ignore=tests/test_phase0.py"
