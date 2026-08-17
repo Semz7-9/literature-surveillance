@@ -1,0 +1,398 @@
+"""
+核心数据模型
+
+关键设计决策：
+1. Work/Record 分离：一个 Work 可以有多个 Record (preprint v1/v2, VoR, etc.)
+2. Evidence/Publication/Claim 三维独立
+3. Identity resolution 本身需要 provenance
+4. null/unknown/unresolved 是合法状态
+"""
+
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+from sqlalchemy import (
+    String,
+    Integer,
+    Float,
+    DateTime,
+    Text,
+    ForeignKey,
+    JSON,
+    Index,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+# ============================================================================
+# Evidence & Status Enums
+# ============================================================================
+
+
+class EvidenceLevel(str, Enum):
+    """我们看到了什么材料（认识论维度）"""
+
+    E0 = "E0"  # Metadata only (title, authors, journal, date, DOI)
+    E1 = "E1"  # + Abstract
+    E2 = "E2"  # + Preprint full text (未经同行评议)
+    E3 = "E3"  # + Accepted Manuscript
+    E4 = "E4"  # + Version of Record
+    E5 = "E5"  # + Supplementary / Data / Code
+
+
+class PublicationStatus(str, Enum):
+    """论文的出版状态（制度/流程维度）"""
+
+    PREPRINT = "PREPRINT"
+    ACTIVE = "ACTIVE"
+    CORRECTED = "CORRECTED"
+    ERRATUM = "ERRATUM"
+    EXPRESSION_OF_CONCERN = "EXPRESSION_OF_CONCERN"
+    PARTIALLY_RETRACTED = "PARTIALLY_RETRACTED"
+    RETRACTED = "RETRACTED"
+    WITHDRAWN = "WITHDRAWN"
+
+
+class ClaimStatus(str, Enum):
+    """基于论文的断言是否有效（知识有效性维度）"""
+
+    VALID = "VALID"
+    RECHECK_REQUIRED = "RECHECK_REQUIRED"
+    DISPUTED = "DISPUTED"
+    INVALIDATED = "INVALIDATED"
+    UNVERIFIED = "UNVERIFIED"
+
+
+class IdentityEvidenceType(str, Enum):
+    """Work identity 判断的证据类型"""
+
+    EXPLICIT_CROSSREF_RELATION = "EXPLICIT_CROSSREF_RELATION"
+    PUBLISHER_RELATION = "PUBLISHER_RELATION"
+    EXACT_TITLE_AUTHOR_MATCH = "EXACT_TITLE_AUTHOR_MATCH"
+    FUZZY_METADATA_MATCH = "FUZZY_METADATA_MATCH"
+    HUMAN_CONFIRMED = "HUMAN_CONFIRMED"
+
+
+class IdentityStatus(str, Enum):
+    """Identity edge 的确认状态"""
+
+    CANDIDATE = "CANDIDATE"  # 系统提议，等待审核
+    PROVISIONAL = "PROVISIONAL"  # 系统自动确认，但可能错
+    CONFIRMED = "CONFIRMED"  # 人工确认或高置信度自动确认
+    REJECTED = "REJECTED"  # 明确不是同一个 Work
+
+
+# ============================================================================
+# Core Entities
+# ============================================================================
+
+
+class Work(Base):
+    """
+    学术作品的抽象概念
+
+    一个 Work 可能有多个 Record：
+    - ChemRxiv v1
+    - ChemRxiv v2
+    - Journal VoR
+    - Correction
+    """
+
+    __tablename__ = "works"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+    # 核心元数据
+    title: Mapped[str] = mapped_column(Text)
+    canonical_doi: Mapped[Optional[str]] = mapped_column(String(255), index=True)
+
+    # 时间
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    # 关系
+    records: Mapped[list["Record"]] = relationship(back_populates="work")
+    identifiers: Mapped[list["WorkIdentifier"]] = relationship(back_populates="work")
+
+
+class Record(Base):
+    """
+    Work 的具体实例化
+
+    同一个 Work 的不同版本、不同出版形式
+    """
+
+    __tablename__ = "records"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # 创建 Record 时 Work 可能尚未解析，resolve_or_create_work() 之后才回填
+    work_id: Mapped[Optional[int]] = mapped_column(ForeignKey("works.id"), index=True)
+
+    # 元数据
+    title: Mapped[str] = mapped_column(Text)
+    authors: Mapped[dict] = mapped_column(JSON)  # [{name, affiliation, orcid}, ...]
+    journal: Mapped[Optional[str]] = mapped_column(String(255))
+    publication_date: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    doi: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True)
+
+    # Abstract
+    abstract: Mapped[Optional[str]] = mapped_column(Text)
+
+    # 三维状态
+    evidence_level: Mapped[str] = mapped_column(String(2), default=EvidenceLevel.E0.value)
+    publication_status: Mapped[str] = mapped_column(
+        String(32), default=PublicationStatus.ACTIVE.value
+    )
+
+    # 其他元数据
+    extra_metadata: Mapped[dict] = mapped_column(JSON, default=dict)  # pmid, pmcid, arxiv_id, etc.
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    # 关系
+    work: Mapped["Work"] = relationship(back_populates="records")
+
+    __table_args__ = (Index("ix_records_publication_date", "publication_date"),)
+
+
+class WorkIdentifier(Base):
+    """
+    Work 的各种标识符
+
+    一个 Work 可能有多个标识符：
+    - preprint DOI
+    - VoR DOI
+    - PMID
+    - PMCID
+    - arXiv ID
+    """
+
+    __tablename__ = "work_identifiers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), index=True)
+
+    identifier_type: Mapped[str] = mapped_column(String(32))  # doi, pmid, pmcid, arxiv, etc.
+    identifier_value: Mapped[str] = mapped_column(String(255), index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # 关系
+    work: Mapped["Work"] = relationship(back_populates="identifiers")
+
+    __table_args__ = (
+        Index("ix_work_identifiers_type_value", "identifier_type", "identifier_value"),
+    )
+
+
+class IdentityEdge(Base):
+    """
+    Work identity resolution 的证据
+
+    "这两个 Record 属于同一个 Work" 本身是一个需要证据支持的判断
+    """
+
+    __tablename__ = "identity_edges"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    source_record_id: Mapped[int] = mapped_column(ForeignKey("records.id"), index=True)
+    target_work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), index=True)
+
+    # 证据
+    evidence_type: Mapped[str] = mapped_column(String(64))
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    evidence_detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # 状态
+    status: Mapped[str] = mapped_column(
+        String(16), default=IdentityStatus.CANDIDATE.value, index=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+# ============================================================================
+# Knowledge Extraction
+# ============================================================================
+
+
+class Claim(Base):
+    """
+    从文献中提取的具体断言
+
+    每个 Claim 必须有：
+    - 内容
+    - 来源 Record
+    - 位置（section, paragraph）
+    - Evidence Level
+    """
+
+    __tablename__ = "claims"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    claim_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+    # 内容
+    content: Mapped[str] = mapped_column(Text)
+    claim_type: Mapped[str] = mapped_column(String(64))  # method, result, limitation, etc.
+
+    # 来源
+    source_record_id: Mapped[int] = mapped_column(ForeignKey("records.id"), index=True)
+    location: Mapped[Optional[str]] = mapped_column(Text)  # section, page, paragraph
+    source_evidence_level: Mapped[str] = mapped_column(String(2))
+
+    # 状态
+    status: Mapped[str] = mapped_column(String(32), default=ClaimStatus.VALID.value)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class Relation(Base):
+    """
+    Work 之间的关系
+
+    例如：
+    - cites
+    - extends
+    - contradicts
+    - applies_method_from
+    """
+
+    __tablename__ = "relations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    source_work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), index=True)
+    target_work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), index=True)
+
+    relation_type: Mapped[str] = mapped_column(String(64), index=True)
+    evidence_record_id: Mapped[Optional[int]] = mapped_column(ForeignKey("records.id"))
+    evidence_level: Mapped[str] = mapped_column(String(2))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ============================================================================
+# User State
+# ============================================================================
+
+
+class ReadingQueue(Base):
+    """
+    用户的阅读意图队列
+
+    从 L0 → L1 → L2 → L3
+    """
+
+    __tablename__ = "reading_queue"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), index=True)
+    requested_level: Mapped[str] = mapped_column(String(2))  # L0, L1, L2, L3
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", index=True
+    )  # pending, processing, done
+
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+    __table_args__ = (Index("ix_reading_queue_status_priority", "status", "priority"),)
+
+
+class UserWorkState(Base):
+    """
+    用户对 Work 的状态标记
+
+    Ignore / Keep / Archive Candidate
+    """
+
+    __tablename__ = "user_work_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), unique=True, index=True)
+    state: Mapped[str] = mapped_column(String(16))  # ignore, keep, candidate
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    # match_reason：为什么出现在我面前
+    match_reason: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+# ============================================================================
+# Source Health
+# ============================================================================
+
+
+class Source(Base):
+    """
+    外部数据源
+
+    Crossref, PubMed, X-MOL, etc.
+    """
+
+    __tablename__ = "sources"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    source_type: Mapped[str] = mapped_column(String(32))  # api, rss, scraper
+
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class SourceHealth(Base):
+    """
+    数据源健康状态
+
+    监控外部 API 是否稳定
+    """
+
+    __tablename__ = "source_health"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), index=True)
+
+    last_success: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    last_failure: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+
+    latency_ms: Mapped[Optional[float]] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(16), default="unknown")  # healthy, degraded, down
+
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

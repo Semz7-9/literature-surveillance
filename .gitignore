@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 数据库文件（本地状态，不入库）
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# 配置文件包含密钥
+config.yaml
+
+# 生成的档案（视需要决定是否入库，默认忽略）
+archives/test/

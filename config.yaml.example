@@ -1,0 +1,19 @@
+database:
+  path: "data/literature.db"
+
+crossref:
+  email: "your-email@example.com"
+  rate_limit: 10.0
+  timeout: 30.0
+
+llm:
+  provider: "deepseek"
+  api_key: "your-api-key-here"
+  model_cheap: "deepseek-chat"
+  model_balanced: "deepseek-chat"
+  model_strong: "deepseek-chat"
+
+monitor:
+  enabled: false
+  check_interval_hours: 24
+  sources: []
