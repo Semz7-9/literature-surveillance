@@ -21,6 +21,7 @@ from sqlalchemy import (
     JSON,
     Index,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -89,7 +90,9 @@ class IdentityEvidenceType(str, Enum):
     - DOI_EXACT: 该 DOI 已经在某个 Work 下注册过（同一个标识符）
     - EXPLICIT_CROSSREF_RELATION: Crossref relation 字段显式声明了版本/预印本关系
     - PUBLISHER_RELATION: 出版商元数据（非 Crossref relation）声明的关系
-    - TITLE_AUTHOR_YEAR: 标题 + 第一作者（+年份）模糊匹配
+    - EXACT_TITLE_FIRST_AUTHOR: 标题完全相同 + 第一作者完全相同的模糊匹配。
+      命名里不含 YEAR，因为当前 _fuzzy_match_work() 根本没有比较年份——
+      provenance 必须描述"实际用了什么证据"，不能预支未来才会加的信号。
     - NEW_WORK: 未匹配到任何已有 Work，新建
     - MANUAL_CONFIRMATION: 人工审核后确认
     """
@@ -97,7 +100,7 @@ class IdentityEvidenceType(str, Enum):
     DOI_EXACT = "DOI_EXACT"
     EXPLICIT_CROSSREF_RELATION = "EXPLICIT_CROSSREF_RELATION"
     PUBLISHER_RELATION = "PUBLISHER_RELATION"
-    TITLE_AUTHOR_YEAR = "TITLE_AUTHOR_YEAR"
+    EXACT_TITLE_FIRST_AUTHOR = "EXACT_TITLE_FIRST_AUTHOR"
     NEW_WORK = "NEW_WORK"
     MANUAL_CONFIRMATION = "MANUAL_CONFIRMATION"
 
@@ -259,6 +262,20 @@ class IdentityEdge(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        # 一个 Record 在任意时刻最多只能有一条生效的 CONFIRMED identity edge。
+        # 没有这个约束，confirm_edge() 可以对同一个 record 确认两条指向不同
+        # Work 的 edge：record.work_id 会指向后一次 confirm 的 Work，但前一条
+        # edge 仍然显示 CONFIRMED——数据库里会同时存在两个"已确认"却互相矛盾
+        # 的历史记录。旧的 CONFIRMED edge 需要先被 reject 才能确认新的。
+        Index(
+            "uq_identity_edges_one_confirmed_per_record",
+            "source_record_id",
+            unique=True,
+            sqlite_where=text(f"status = '{IdentityStatus.CONFIRMED.value}'"),
+        ),
     )
 
 

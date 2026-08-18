@@ -29,6 +29,19 @@ from ..core.models import (
 )
 
 
+# Crossref 的 intra-work relation 是成对（reciprocal）定义的：一篇论文说
+# "is-preprint-of B"，B 的 metadata 里通常会有 "has-preprint A" 反过来指回来。
+# 只检查其中一个方向会在"先导入 preprint 后导入 VoR"时错过关系——即使 VoR
+# 自己的 relation 字段里已经带着能找到 preprint 的证据。这里不区分方向，两个
+# 方向都当作"这两个 identifier 属于同一个 Work"的证据来处理。
+INTRA_WORK_RELATIONS = {
+    "is-preprint-of",
+    "has-preprint",
+    "is-version-of",
+    "has-version",
+}
+
+
 class WorkIdentityResolver:
     """Work identity resolution 逻辑"""
 
@@ -107,9 +120,8 @@ class WorkIdentityResolver:
     async def _resolve_from_explicit_relation(
         self, record: Record, relations: dict
     ) -> Optional[IdentityEdge]:
-        """从 Crossref explicit relation 解析"""
-        # is-version-of, is-preprint-of, has-preprint, etc.
-        for relation_type in ["is-version-of", "is-preprint-of"]:
+        """从 Crossref explicit relation 解析（双向：is-X-of 和 has-X 都算证据）"""
+        for relation_type in INTRA_WORK_RELATIONS:
             if relation_type in relations:
                 for related in relations[relation_type]:
                     related_doi = related.get("id")
@@ -182,7 +194,7 @@ class WorkIdentityResolver:
                     return await self._create_identity_edge(
                         record,
                         work,
-                        IdentityEvidenceType.TITLE_AUTHOR_YEAR,
+                        IdentityEvidenceType.EXACT_TITLE_FIRST_AUTHOR,
                         0.7,
                         IdentityStatus.CANDIDATE,
                         {
@@ -268,10 +280,30 @@ class WorkIdentityResolver:
         return list(result.scalars().all())
 
     async def confirm_edge(self, edge_id: int) -> None:
-        """人工确认 identity edge，并把 record.work_id materialize 到目标 Work"""
+        """
+        人工确认 identity edge，并把 record.work_id materialize 到目标 Work
+
+        Raises:
+            ValueError: 如果该 record 已经有另一条生效的 CONFIRMED edge。
+                必须先 reject_edge() 那一条，再确认这一条——不允许同一个
+                record 同时存在两条互相矛盾的"已确认"身份判断。
+        """
         stmt = select(IdentityEdge).where(IdentityEdge.id == edge_id)
         result = await self.session.execute(stmt)
         edge = result.scalar_one()
+
+        existing_stmt = select(IdentityEdge).where(
+            IdentityEdge.source_record_id == edge.source_record_id,
+            IdentityEdge.status == IdentityStatus.CONFIRMED.value,
+            IdentityEdge.id != edge.id,
+        )
+        existing = (await self.session.execute(existing_stmt)).scalar_one_or_none()
+        if existing:
+            raise ValueError(
+                f"Record {edge.source_record_id} already has a CONFIRMED edge "
+                f"(id={existing.id}, target_work_id={existing.target_work_id}). "
+                f"Reject it before confirming edge {edge_id}."
+            )
 
         edge.status = IdentityStatus.CONFIRMED.value
         edge.updated_at = datetime.utcnow()

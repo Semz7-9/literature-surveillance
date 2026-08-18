@@ -154,14 +154,49 @@ async def test_explicit_relation_reverse_import_order_is_lost_without_pending_re
         assert edge.evidence_type == IdentityEvidenceType.NEW_WORK.value
         assert materialized is True
 
-        # 后导入 VoR，它不会自动发现 preprint（因为查找方向是反的）
+        # 后导入 VoR，这里没有给它任何 relation（模拟 Crossref 没有提供
+        # has-preprint/has-version 反向声明的情况——不是所有出版商的
+        # metadata 都会双向声明）。没有 relation 证据，fuzzy match 也因为
+        # 标题不完全相同（少了 "(preprint)"）而不命中，于是两者成为独立的
+        # Work —— 这正是"没有 PendingIdentifierRelation 就会丢数据"的场景。
+        # 如果 VoR 自己的 relation 里带 has-preprint，见下面
+        # test_reverse_import_order_resolves_via_reciprocal_relation。
         vor_factory = make_record_factory("Protein Folding Breakthrough", "Lee K")
         vor, _ = await get_or_create_record(session, "10.1/vor2", vor_factory)
         vor_edge, vor_materialized = await resolve_and_maybe_materialize(session, resolver, vor)
 
-        # 标题不完全相同（少了 "(preprint)"），fuzzy match 也不会命中，
-        # 于是两者成为独立的 Work —— 这正是数据丢失的表现
         assert vor.work_id != preprint.work_id
+
+
+async def test_reverse_import_order_resolves_via_reciprocal_relation(db: Database):
+    """
+    Crossref 的 intra-work relation 是成对定义的：一篇论文说
+    is-preprint-of/is-version-of，对应的另一篇通常会有 has-preprint/has-version
+    反过来指回来。如果后导入的 VoR 自己的 metadata 里带着 has-preprint，
+    resolver 现在应该能够识别，而不需要等 PendingIdentifierRelation。
+    """
+    async with db.get_session() as session:
+        resolver = WorkIdentityResolver(session)
+
+        # 先导入 preprint，此时 VoR 尚未入库
+        preprint_factory = make_record_factory("Attention Is All You Need (preprint)", "Vaswani A")
+        preprint, _ = await get_or_create_record(session, "10.1/attn-preprint", preprint_factory)
+        edge, materialized = await resolve_and_maybe_materialize(
+            session, resolver, preprint, {"is-preprint-of": [{"id": "10.1/attn-vor"}]}
+        )
+        assert edge.evidence_type == IdentityEvidenceType.NEW_WORK.value  # 目标还不存在
+
+        # 后导入 VoR，它自己的 relation 里有 has-preprint 指回 preprint
+        vor_factory = make_record_factory("Attention Is All You Need", "Vaswani A")
+        vor, _ = await get_or_create_record(session, "10.1/attn-vor", vor_factory)
+        vor_edge, vor_materialized = await resolve_and_maybe_materialize(
+            session, resolver, vor, {"has-preprint": [{"id": "10.1/ATTN-PREPRINT"}]}
+        )
+
+        assert vor_edge.evidence_type == IdentityEvidenceType.EXPLICIT_CROSSREF_RELATION.value
+        assert vor_edge.status == IdentityStatus.CONFIRMED.value
+        assert vor_materialized is True
+        assert vor.work_id == preprint.work_id
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +245,7 @@ async def test_same_title_and_first_author_only_produces_candidate(db: Database)
         # 关键断言：即使 title+first_author 完全一致，也不能自动 materialize，
         # 必须停在 CANDIDATE 等人工确认——这是本轮修复要保证的核心不变量
         assert edge2.status == IdentityStatus.CANDIDATE.value
-        assert edge2.evidence_type == IdentityEvidenceType.TITLE_AUTHOR_YEAR.value
+        assert edge2.evidence_type == IdentityEvidenceType.EXACT_TITLE_FIRST_AUTHOR.value
         assert m2 is False
         assert r2.work_id is None  # 没有被污染到 r1 的 Work
 
@@ -321,3 +356,54 @@ async def test_work_identifier_doi_uniqueness_enforced_at_db_level(db: Database)
         )
         with pytest.raises(IntegrityError):
             await session.flush()
+
+
+# ---------------------------------------------------------------------------
+# 一个 Record 不能同时有两条互相矛盾的 CONFIRMED edge
+# ---------------------------------------------------------------------------
+
+
+async def test_confirm_edge_rejects_second_confirmation_for_same_record(db: Database):
+    """
+    confirm_edge() 必须拒绝"这个 record 已经有另一条生效 CONFIRMED edge"的情况，
+    而不是让 record.work_id 悄悄指向新 Work，同时留一条陈旧但依然是 CONFIRMED
+    的旧 edge 在数据库里，产生自相矛盾的历史。
+    """
+    async with db.get_session() as session:
+        resolver = WorkIdentityResolver(session)
+
+        r1, _ = await get_or_create_record(
+            session, "10.1/multi1", make_record_factory("Multi Confirm Paper", "Patel R")
+        )
+        edge_a, _ = await resolve_and_maybe_materialize(session, resolver, r1)  # NEW_WORK, confirmed
+
+        # 手工构造一条指向另一个 Work 的候选 edge，模拟"系统提议了第二种身份判断"
+        from src.core.models import IdentityEdge, IdentityEvidenceType
+
+        other_work = Work(work_id="W_other", title="Unrelated")
+        session.add(other_work)
+        await session.flush()
+
+        edge_b = IdentityEdge(
+            source_record_id=r1.id,
+            target_work_id=other_work.id,
+            evidence_type=IdentityEvidenceType.MANUAL_CONFIRMATION.value,
+            confidence=1.0,
+            status=IdentityStatus.CANDIDATE.value,
+        )
+        session.add(edge_b)
+        await session.flush()
+
+        with pytest.raises(ValueError, match="already has a CONFIRMED edge"):
+            await resolver.confirm_edge(edge_b.id)
+
+        # 确认失败后原有状态不受影响
+        await session.refresh(r1)
+        assert r1.work_id == edge_a.target_work_id
+        assert edge_b.status == IdentityStatus.CANDIDATE.value
+
+        # 先 reject 旧的，再 confirm 新的才应该成功
+        await resolver.reject_edge(edge_a.id)
+        await resolver.confirm_edge(edge_b.id)
+        await session.refresh(r1)
+        assert r1.work_id == other_work.id
