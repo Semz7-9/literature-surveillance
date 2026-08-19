@@ -2,13 +2,13 @@
 L1 Literature Card 生成器
 """
 
-import hashlib
 import uuid
 from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..llm.client import LLMClient
+from ..core.artifact import verify_snapshot_integrity
 from ..core.models import Record, SourceSnapshot, AnalysisArtifact
 from skills.l1_literature_card.contract import L1Input, L1Output, SKILL_VERSION, SCHEMA_VERSION
 from skills.l1_literature_card.validator import validate_l1_output
@@ -89,11 +89,13 @@ async def run_l1(
     """
     Single entry point for L1 generation + persistence.
 
-    Enforces snapshot integrity BEFORE calling the LLM: the snapshot must
-    belong to this record, and its analysis_text must match its recorded
-    analysis_hash. This guarantees the AnalysisArtifact's snapshot_id is
-    provably the text that was actually analyzed, not just a label attached
-    after the fact.
+    Order of operations is deliberate:
+    1. Structural/integrity checks (cheap, no I/O to LLM) — snapshot
+       ownership, snapshot hash integrity, confirmed identity.
+    2. Check for an existing matching artifact BEFORE calling the LLM —
+       a real idempotency guarantee (same record+snapshot+skill/schema
+       version never triggers a second LLM call), not just a DB-write guard.
+    3. Only if no existing artifact is found, call the LLM and persist.
     """
     if snapshot.record_id != record.id:
         raise ValueError(
@@ -101,13 +103,16 @@ async def run_l1(
         )
     if not snapshot.analysis_text:
         raise ValueError(f"Snapshot {snapshot.id} has no analysis_text to extract from")
-    if snapshot.analysis_hash:
-        actual_hash = hashlib.sha256(snapshot.analysis_text.encode()).hexdigest()
-        if actual_hash != snapshot.analysis_hash:
-            raise ValueError(
-                f"Snapshot {snapshot.id} analysis_text does not match its recorded "
-                f"analysis_hash — snapshot integrity check failed"
-            )
+    verify_snapshot_integrity(snapshot)
+    if record.work_id is None:
+        raise ValueError(
+            f"Record {record.record_id} has no confirmed work_id — "
+            "L1 generation requires a confirmed identity"
+        )
+
+    existing = await _find_existing_l1_artifact(session, record, snapshot)
+    if existing:
+        return existing
 
     input_data = L1Input(
         work_id=f"W{record.work_id}",
@@ -121,25 +126,16 @@ async def run_l1(
         snapshot_id=snapshot.id,
     )
     output = await generate_l1_card(input_data, llm_client)
-    return await persist_l1_artifact(session, record, snapshot, output)
+    return await _persist_l1_artifact(session, record, snapshot, output)
 
 
-async def persist_l1_artifact(
+async def _find_existing_l1_artifact(
     session: AsyncSession,
     record: Record,
     snapshot: SourceSnapshot,
-    output: L1Output,
-) -> AnalysisArtifact:
-    """
-    Persist an L1Output as an AnalysisArtifact, idempotently.
-
-    Same record + same snapshot + same skill/schema version returns the
-    existing artifact instead of creating a duplicate (safe to call again
-    after a retry). A change in snapshot or skill/schema version creates a
-    new artifact linked via supersedes_id, preserving history rather than
-    overwriting it.
-    """
-    existing_stmt = (
+) -> AnalysisArtifact | None:
+    """Look up an already-persisted L1 artifact for this record/snapshot/version."""
+    stmt = (
         select(AnalysisArtifact)
         .where(
             AnalysisArtifact.record_id == record.id,
@@ -150,10 +146,22 @@ async def persist_l1_artifact(
         )
         .order_by(AnalysisArtifact.created_at.desc())
     )
-    existing = (await session.execute(existing_stmt)).scalars().first()
-    if existing:
-        return existing
+    return (await session.execute(stmt)).scalars().first()
 
+
+async def _persist_l1_artifact(
+    session: AsyncSession,
+    record: Record,
+    snapshot: SourceSnapshot,
+    output: L1Output,
+) -> AnalysisArtifact:
+    """
+    Persist an L1Output as a new AnalysisArtifact.
+
+    Private — only reachable via run_l1(), which has already performed the
+    snapshot/identity checks and the pre-LLM existing-artifact lookup. This
+    function's own job is just to write the new row and link supersedes_id.
+    """
     prior_stmt = (
         select(AnalysisArtifact)
         .where(

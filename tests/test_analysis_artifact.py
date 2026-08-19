@@ -1,9 +1,13 @@
 """
 AnalysisArtifact 持久化的 regression test（P0 item 3 + run_l1 完整性检查）
 
-不调用真实 LLM——persist_l1_artifact 直接接受手工构造的 L1Output；
-run_l1 的完整性检查在真正调用 llm_client 之前就应该抛错，所以传 None
-进去验证检查顺序是安全的。
+不调用真实 LLM——用 FakeLLMClient 代替真实的 LLMClient，call_with_schema
+返回手工构造的固定 L1Output，并记录调用次数，用来验证 Gap 1（run_l1 在
+调用 LLM 之前就应该先查一遍是否已有 artifact，真正做到"调两次只打一次
+LLM"，而不仅仅是"数据库只有一行"）。
+
+persist_l1_artifact 已经改名为私有的 _persist_l1_artifact，只能通过
+run_l1() 触达，所以这里所有测试都改成走 run_l1()。
 
 沿用 test_identity_resolution.py 里的 db fixture 模式。
 """
@@ -16,7 +20,7 @@ from sqlalchemy import select
 from src.core.database import Database
 from src.core.models import Record, AnalysisArtifact
 from src.core.artifact import create_source_snapshot
-from src.workflows.l1_generator import persist_l1_artifact, run_l1
+from src.workflows.l1_generator import run_l1
 from skills.l1_literature_card.contract import L1Output
 
 
@@ -28,10 +32,10 @@ async def db(tmp_path: Path) -> Database:
     await database.close()
 
 
-def make_record(doi: str, abstract: str = "KRAS mutations drive cancer.") -> Record:
+def make_record(doi: str, abstract: str = "KRAS mutations drive cancer.", work_id: int | None = 1) -> Record:
     return Record(
         record_id=f"R_{doi.replace('/', '_')}",
-        work_id=1,
+        work_id=work_id,
         title="Some Paper",
         authors=[{"name": "Smith J"}],
         doi=doi,
@@ -56,23 +60,42 @@ def make_output(**overrides) -> L1Output:
     return L1Output(**data)
 
 
+class FakeLLMClient:
+    """
+    llm_client 的替身：call_with_schema 不打真实网络请求，直接返回一个
+    固定的 L1Output，同时记录调用次数（call_count），用来断言 run_l1
+    到底有没有真正跳过 LLM 调用。
+    """
+
+    def __init__(self, output: L1Output | None = None):
+        self.output = output or make_output()
+        self.call_count = 0
+
+    async def call_with_schema(self, prompt: str, schema, system_prompt: str | None = None):
+        self.call_count += 1
+        return self.output
+
+
 # ---------------------------------------------------------------------------
-# Idempotency: same record/snapshot/output -> same artifact row
+# Idempotency: same record/snapshot -> same artifact row, AND the LLM is
+# only ever called once (Gap 1: idempotency must be call-idempotent, not
+# just DB-write-idempotent)
 # ---------------------------------------------------------------------------
 
 
-async def test_persist_l1_artifact_is_idempotent(db: Database):
+async def test_run_l1_is_idempotent_and_does_not_repeat_llm_call(db: Database):
     async with db.get_session() as session:
         record = make_record("10.1/idem")
         session.add(record)
         await session.flush()
         snapshot = await create_source_snapshot(session, record, "crossref")
 
-        output = make_output()
-        artifact1 = await persist_l1_artifact(session, record, snapshot, output)
-        artifact2 = await persist_l1_artifact(session, record, snapshot, output)
+        fake_llm = FakeLLMClient()
+        artifact1 = await run_l1(session, record, snapshot, fake_llm)
+        artifact2 = await run_l1(session, record, snapshot, fake_llm)
 
         assert artifact1.id == artifact2.id
+        assert fake_llm.call_count == 1
 
         count_stmt_result = await session.execute(
             select(AnalysisArtifact).where(AnalysisArtifact.record_id == record.id)
@@ -86,29 +109,41 @@ async def test_persist_l1_artifact_is_idempotent(db: Database):
 # ---------------------------------------------------------------------------
 
 
-async def test_persist_l1_artifact_versions_on_skill_bump(db: Database, monkeypatch):
+async def test_run_l1_versions_on_skill_bump(db: Database):
     async with db.get_session() as session:
         record = make_record("10.1/version")
         session.add(record)
         await session.flush()
         snapshot = await create_source_snapshot(session, record, "crossref")
 
-        output = make_output()
+        # Simulate a pre-existing artifact from an older skill/schema version,
+        # constructed directly via the ORM (not through _persist_l1_artifact —
+        # this is standing in for data that was already there before this run).
+        import uuid as uuid_module
 
-        import src.workflows.l1_generator as l1_generator_module
+        old_output = make_output()
+        old_artifact = AnalysisArtifact(
+            artifact_id=uuid_module.uuid4().hex,
+            record_id=record.id,
+            snapshot_id=snapshot.id,
+            analysis_type="L1",
+            skill_version="l1-literature-card-v1",
+            schema_version="1",
+            content=old_output.model_dump(),
+            markdown="old markdown",
+        )
+        session.add(old_artifact)
+        await session.flush()
 
-        monkeypatch.setattr(l1_generator_module, "SKILL_VERSION", "l1-literature-card-v1")
-        monkeypatch.setattr(l1_generator_module, "SCHEMA_VERSION", "1")
-        old_artifact = await persist_l1_artifact(session, record, snapshot, output)
-        assert old_artifact.skill_version == "l1-literature-card-v1"
-
-        monkeypatch.setattr(l1_generator_module, "SKILL_VERSION", "l1-literature-card-v2")
-        monkeypatch.setattr(l1_generator_module, "SCHEMA_VERSION", "2")
-        new_artifact = await persist_l1_artifact(session, record, snapshot, output)
+        # run_l1 uses the module's current SKILL_VERSION/SCHEMA_VERSION, which
+        # differ from the artifact just inserted above, so it should generate
+        # a new artifact and link it via supersedes_id.
+        fake_llm = FakeLLMClient()
+        new_artifact = await run_l1(session, record, snapshot, fake_llm)
 
         assert new_artifact.id != old_artifact.id
         assert new_artifact.supersedes_id == old_artifact.id
-        assert new_artifact.skill_version == "l1-literature-card-v2"
+        assert fake_llm.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -141,3 +176,42 @@ async def test_run_l1_rejects_tampered_snapshot_hash(db: Database):
 
         with pytest.raises(ValueError, match="integrity"):
             await run_l1(session, record, snapshot, llm_client=None)
+
+
+async def test_run_l1_rejects_tampered_raw_hash(db: Database):
+    """
+    Gap 4: verify_snapshot_integrity must check raw_hash too, not just
+    analysis_hash. Tampering with raw_abstract/raw_hash (leaving
+    analysis_text/analysis_hash untouched) must still be caught.
+    """
+    async with db.get_session() as session:
+        record = make_record("10.1/tampered-raw")
+        session.add(record)
+        await session.flush()
+
+        snapshot = await create_source_snapshot(session, record, "crossref")
+        # tamper with raw_abstract only — analysis_hash is still valid
+        snapshot.raw_abstract = "something completely different"
+
+        with pytest.raises(ValueError, match="integrity"):
+            await run_l1(session, record, snapshot, llm_client=None)
+
+
+# ---------------------------------------------------------------------------
+# Gap 5: record.work_id is None must raise, not silently become "WNone"
+# ---------------------------------------------------------------------------
+
+
+async def test_run_l1_rejects_unconfirmed_identity_without_calling_llm(db: Database):
+    async with db.get_session() as session:
+        record = make_record("10.1/no-identity", work_id=None)
+        session.add(record)
+        await session.flush()
+
+        snapshot = await create_source_snapshot(session, record, "crossref")
+
+        fake_llm = FakeLLMClient()
+        with pytest.raises(ValueError, match="work_id|identity"):
+            await run_l1(session, record, snapshot, fake_llm)
+
+        assert fake_llm.call_count == 0

@@ -12,9 +12,10 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from src.core.database import Database
-from src.core.models import Record
+from src.core.models import Record, SourceSnapshot
 from src.core.artifact import create_source_snapshot
 from src.core.text_normalize import normalize_abstract_text, NORMALIZER_VERSION
 
@@ -105,3 +106,41 @@ async def test_create_source_snapshot_handles_missing_abstract(db: Database):
         assert snapshot.raw_hash is None
         assert snapshot.analysis_hash is None
         assert snapshot.normalizer_version is None
+
+
+# ---------------------------------------------------------------------------
+# Gap 3: create_source_snapshot must dedup identical content instead of
+# inserting a new row on every call (a daily re-fetch monitor would
+# otherwise force spurious LLM re-runs on unchanged abstracts, since
+# AnalysisArtifact idempotency keys off snapshot.id).
+# ---------------------------------------------------------------------------
+
+
+async def test_create_source_snapshot_dedupes_identical_content(db: Database):
+    async with db.get_session() as session:
+        record = make_record("10.1/dedup", "We report a novel KRAS inhibitor.")
+        session.add(record)
+        await session.flush()
+
+        snapshot1 = await create_source_snapshot(session, record, "crossref")
+        snapshot2 = await create_source_snapshot(session, record, "crossref")
+
+        # Same record_id + source_name + raw_hash + normalizer_version -> reuse
+        assert snapshot1.id == snapshot2.id
+
+        count_result = await session.execute(
+            select(SourceSnapshot).where(SourceSnapshot.record_id == record.id)
+        )
+        assert len(count_result.scalars().all()) == 1
+
+        # Content actually changes -> a new, distinct snapshot must be created
+        record.abstract = "We report a completely different BRAF inhibitor."
+        await session.flush()
+        snapshot3 = await create_source_snapshot(session, record, "crossref")
+
+        assert snapshot3.id != snapshot1.id
+
+        count_result_after = await session.execute(
+            select(SourceSnapshot).where(SourceSnapshot.record_id == record.id)
+        )
+        assert len(count_result_after.scalars().all()) == 2
