@@ -24,13 +24,14 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 from sqlalchemy import select
 
 from src.core.database import Database
-from src.core.models import Record, Work, EvidenceLevel, PublicationStatus
+from src.core.models import Record, Work, EvidenceLevel, PublicationStatus, SourceSnapshot
 from src.core.work_identity import WorkIdentityResolver
 from src.core.config import load_config
 from src.core.ingestion import get_or_create_record
+from src.core.artifact import create_source_snapshot
 from src.adapters.crossref import CrossrefAdapter, parse_crossref_metadata
 from src.llm.client import create_llm_client
-from src.workflows.l1_generator import generate_l1_card
+from src.workflows.l1_generator import generate_l1_card, persist_l1_artifact
 from skills.l1_literature_card.contract import L1Input, L1Output
 from skills.l1_literature_card.validator import validate_l1_output
 
@@ -117,6 +118,8 @@ async def test_work_resolution(db: Database, crossref: CrossrefAdapter):
                 print(f"  Record already exists: {record.record_id}")
                 continue
 
+            snapshot = await create_source_snapshot(session, record, "crossref")
+
             # 解析 identity edge（不一定是 confirmed，可能需要人工审核）
             edge = await resolver.resolve_or_create_work(record, relations)
             materialized = await resolver.materialize_if_confirmed(record, edge)
@@ -162,6 +165,13 @@ async def test_l1_generation(db: Database, llm_client):
         for record in records:
             print(f"\nProcessing: {record.doi}")
 
+            # Query snapshot for this record
+            snap_stmt = select(SourceSnapshot).where(
+                SourceSnapshot.record_id == record.id
+            ).limit(1)
+            snap_result = await session.execute(snap_stmt)
+            snapshot = snap_result.scalar_one_or_none()
+
             # 准备输入
             input_data = L1Input(
                 work_id=f"W{record.work_id}",
@@ -174,6 +184,7 @@ async def test_l1_generation(db: Database, llm_client):
                     record.publication_date.isoformat() if record.publication_date else None
                 ),
                 evidence_level=record.evidence_level,
+                snapshot_id=snapshot.id if snapshot else None,
             )
 
             # 调用真实 LLM
@@ -184,6 +195,8 @@ async def test_l1_generation(db: Database, llm_client):
                 print(f"  Tags: {output.tags}")
                 print(f"  Research object: {output.research_object}")
                 print(f"  Major method: {output.major_method}")
+                artifact = await persist_l1_artifact(session, record, snapshot, output)
+                print(f"  ✓ L1 persisted as artifact {artifact.artifact_id}")
             except Exception as e:
                 print(f"  ✗ L1 generation failed: {e}")
 

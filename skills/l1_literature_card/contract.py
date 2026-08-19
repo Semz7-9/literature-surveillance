@@ -1,25 +1,18 @@
 """
-L1 Literature Card Skill
-
-将 Abstract 转换为分级阅读卡片的第一层：
-- 一句话总结
-- 标签
-- 研究对象
-- 主要方法
-- 作者报告的结果
-
-约束：
-- 只能用于 E1+ (有 Abstract)
-- 输出必须通过 schema validation
-- 不得包含全文级信息（methods detail, limitations, citation context）
+L1 Literature Card Skill contract
 """
 
+from enum import Enum
 from pydantic import BaseModel, Field
 
 
-class L1Input(BaseModel):
-    """L1 Skill 输入"""
+class MissingReason(str, Enum):
+    NOT_STATED = "NOT_STATED"          # 摘要中未提及该信息
+    NOT_APPLICABLE = "NOT_APPLICABLE"  # 与本研究类型不相关
+    PARSE_FAILED = "PARSE_FAILED"      # LLM 未能可靠提取
 
+
+class L1Input(BaseModel):
     work_id: str
     record_id: str
     title: str
@@ -27,9 +20,8 @@ class L1Input(BaseModel):
     abstract: str
     journal: str | None = None
     publication_date: str | None = None
-
-    # 必须是 E1+
     evidence_level: str = Field(pattern="^E[1-5]$")
+    snapshot_id: int | None = None  # links artifact to the SourceSnapshot used
 
     class Config:
         json_schema_extra = {
@@ -37,10 +29,8 @@ class L1Input(BaseModel):
                 "work_id": "W001",
                 "record_id": "R001",
                 "title": "Discovery of covalent inhibitors targeting KRASG12C",
-                "authors": ["Smith J", "Chen L", "Johnson M"],
+                "authors": ["Smith J", "Chen L"],
                 "abstract": "KRAS mutations are prevalent in cancer...",
-                "journal": "Nature",
-                "publication_date": "2024-03-15",
                 "evidence_level": "E1",
             }
         }
@@ -50,7 +40,10 @@ class L1Output(BaseModel):
     """
     L1 Skill 输出
 
-    必须简洁，不得包含详细方法、局限性等全文级信息
+    必须简洁，不得包含详细方法、局限性等全文级信息。
+    research_object/major_method/author_reported_result 允许为 None，
+    但为 None 时必须同时提供对应的 *_missing_reason。
+    evidence_spans 为每个非 None 字段提供摘要原文依据（逐字引用）。
     """
 
     one_sentence: str = Field(
@@ -63,62 +56,68 @@ class L1Output(BaseModel):
         description="3-5个标签，例如研究类型、领域、技术",
     )
 
-    research_object: str = Field(
+    research_object: str | None = Field(
+        None,
         max_length=150,
-        description="研究的主要对象（蛋白、化合物、细胞系等）",
+        description="研究的主要对象（蛋白、化合物、细胞系等），摘要中未提及时为 null",
     )
+    research_object_missing_reason: MissingReason | None = None
 
-    major_method: str = Field(
+    major_method: str | None = Field(
+        None,
         max_length=150,
-        description="主要方法或技术平台",
+        description="主要方法或技术平台，摘要中未提及时为 null",
     )
+    major_method_missing_reason: MissingReason | None = None
 
-    author_reported_result: str = Field(
+    author_reported_result: str | None = Field(
+        None,
         max_length=200,
-        description="作者报告的主要结果（来自 Abstract）",
+        description="作者报告的主要结果（来自 Abstract），摘要中未提及时为 null",
     )
+    author_reported_result_missing_reason: MissingReason | None = None
 
-    visual_status: str = Field(
-        pattern="^(public|unavailable)$",
-        description="图片可获得性",
+    evidence_spans: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "field_name → verbatim quote from abstract. "
+            "For each non-null field above, copy the exact sentence(s) that support it."
+        ),
     )
 
     class Config:
         json_schema_extra = {
             "example": {
-                "one_sentence": "开发了针对KRASG12C突变的共价抑制剂，在临床前模型中显示抗肿瘤活性",
-                "tags": ["covalent inhibitor", "KRAS", "cancer", "drug discovery"],
+                "one_sentence": "开发了针对KRASG12C突变的共价抑制剂",
+                "tags": ["covalent inhibitor", "KRAS", "cancer"],
                 "research_object": "KRASG12C mutant protein",
-                "major_method": "structure-based drug design, biochemical assay, xenograft model",
-                "author_reported_result": "Lead compound showed IC50 of 8 nM and tumor regression in mice",
-                "visual_status": "public",
+                "research_object_missing_reason": None,
+                "major_method": "structure-based drug design",
+                "major_method_missing_reason": None,
+                "author_reported_result": "Lead compound showed IC50 of 8 nM",
+                "author_reported_result_missing_reason": None,
+                "evidence_spans": {
+                    "research_object": "KRAS mutations drive tumor growth",
+                    "major_method": "We used structure-based design",
+                    "author_reported_result": "IC50 of 8 nM was measured",
+                },
             }
         }
 
 
-# Evidence Level 到允许字段的映射
 EVIDENCE_PERMISSION = {
-    "E0": [],  # E0 不能生成 L1
-    "E1": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result", "visual_status"],
-    "E2": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result", "visual_status"],
-    "E3": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result", "visual_status"],
-    "E4": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result", "visual_status"],
-    "E5": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result", "visual_status"],
+    "E0": [],
+    "E1": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result"],
+    "E2": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result"],
+    "E3": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result"],
+    "E4": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result"],
+    "E5": ["one_sentence", "tags", "research_object", "major_method", "author_reported_result"],
 }
 
 
 def validate_evidence_permission(evidence_level: str, output: L1Output) -> tuple[bool, list[str]]:
-    """
-    验证当前 Evidence Level 是否允许输出这些字段
-
-    Returns:
-        (is_valid, violations)
-    """
     if evidence_level not in EVIDENCE_PERMISSION:
         return False, [f"Unknown evidence level: {evidence_level}"]
-
     if evidence_level == "E0":
         return False, ["E0 (metadata only) cannot generate L1 card"]
-
-    # E1+ 都允许 L1 的所有字段
     return True, []

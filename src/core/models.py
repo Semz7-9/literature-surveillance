@@ -279,6 +279,51 @@ class IdentityEdge(Base):
     )
 
 
+class SourceSnapshot(Base):
+    """
+    Record 摘要文本的不变快照
+
+    abstract 在后续重新抓取时可能被覆盖。EvidenceSpan 将指向
+    snapshot.id，而不是 Record.abstract，避免"证据锚点在元数据
+    更新后失效"的问题。这是最小版本：只捕获 abstract 文本和来源。
+    """
+    __tablename__ = "source_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    record_id: Mapped[int] = mapped_column(ForeignKey("records.id"), index=True)
+
+    abstract_text: Mapped[Optional[str]] = mapped_column(Text)
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64))  # SHA-256 hex
+    source_name: Mapped[str] = mapped_column(String(64))  # "crossref", "pubmed", etc.
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AnalysisArtifact(Base):
+    """
+    持久化的分析输出（L1/L2/L3 等）
+
+    analysis 结果落盘到这里，不再只是打印。snapshot_id 指向分析时
+    使用的原始文本快照，保证"用什么数据得出什么结论"可复现。
+    """
+    __tablename__ = "analysis_artifacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+    record_id: Mapped[int] = mapped_column(ForeignKey("records.id"), index=True)
+    snapshot_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("source_snapshots.id"), index=True
+    )
+
+    analysis_type: Mapped[str] = mapped_column(String(32), index=True)  # "L1", "L2", etc.
+    content: Mapped[dict] = mapped_column(JSON)  # analysis output dict
+    markdown: Mapped[Optional[str]] = mapped_column(Text)  # rendered Markdown
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 # ============================================================================
 # Knowledge Extraction
 # ============================================================================
