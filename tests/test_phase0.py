@@ -31,9 +31,8 @@ from src.core.ingestion import get_or_create_record
 from src.core.artifact import create_source_snapshot
 from src.adapters.crossref import CrossrefAdapter, parse_crossref_metadata
 from src.llm.client import create_llm_client
-from src.workflows.l1_generator import generate_l1_card, persist_l1_artifact
-from skills.l1_literature_card.contract import L1Input, L1Output
-from skills.l1_literature_card.validator import validate_l1_output
+from src.workflows.l1_generator import run_l1
+from skills.l1_literature_card.contract import L1Output
 
 
 # 测试用的 DOI 列表（覆盖不同场景）
@@ -172,30 +171,20 @@ async def test_l1_generation(db: Database, llm_client):
             snap_result = await session.execute(snap_stmt)
             snapshot = snap_result.scalar_one_or_none()
 
-            # 准备输入
-            input_data = L1Input(
-                work_id=f"W{record.work_id}",
-                record_id=record.record_id,
-                title=record.title,
-                authors=[a["name"] for a in record.authors],
-                abstract=record.abstract,
-                journal=record.journal,
-                publication_date=(
-                    record.publication_date.isoformat() if record.publication_date else None
-                ),
-                evidence_level=record.evidence_level,
-                snapshot_id=snapshot.id if snapshot else None,
-            )
+            if snapshot is None or not snapshot.analysis_text:
+                print("  SKIP: no usable snapshot (missing or empty analysis_text)")
+                continue
 
-            # 调用真实 LLM
+            # 调用真实 LLM（run_l1 内部会做 snapshot 完整性校验、组装 L1Input、
+            # 生成并落盘 artifact——不再在这里手工拼 L1Input）
             try:
-                output = await generate_l1_card(input_data, llm_client)
+                artifact = await run_l1(session, record, snapshot, llm_client)
+                output = L1Output(**artifact.content)
                 print(f"  ✓ L1 generation successful")
                 print(f"  One-sentence: {output.one_sentence}")
                 print(f"  Tags: {output.tags}")
                 print(f"  Research object: {output.research_object}")
                 print(f"  Major method: {output.major_method}")
-                artifact = await persist_l1_artifact(session, record, snapshot, output)
                 print(f"  ✓ L1 persisted as artifact {artifact.artifact_id}")
             except Exception as e:
                 print(f"  ✗ L1 generation failed: {e}")

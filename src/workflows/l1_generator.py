@@ -3,12 +3,14 @@ L1 Literature Card 生成器
 """
 
 import hashlib
+import uuid
 from datetime import datetime
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..llm.client import LLMClient
 from ..core.models import Record, SourceSnapshot, AnalysisArtifact
-from skills.l1_literature_card.contract import L1Input, L1Output
+from skills.l1_literature_card.contract import L1Input, L1Output, SKILL_VERSION, SCHEMA_VERSION
 from skills.l1_literature_card.validator import validate_l1_output
 
 
@@ -78,28 +80,101 @@ async def generate_l1_card(input_data: L1Input, llm_client: LLMClient) -> L1Outp
     return output
 
 
+async def run_l1(
+    session: AsyncSession,
+    record: Record,
+    snapshot: SourceSnapshot,
+    llm_client: LLMClient,
+) -> AnalysisArtifact:
+    """
+    Single entry point for L1 generation + persistence.
+
+    Enforces snapshot integrity BEFORE calling the LLM: the snapshot must
+    belong to this record, and its analysis_text must match its recorded
+    analysis_hash. This guarantees the AnalysisArtifact's snapshot_id is
+    provably the text that was actually analyzed, not just a label attached
+    after the fact.
+    """
+    if snapshot.record_id != record.id:
+        raise ValueError(
+            f"Snapshot {snapshot.id} belongs to record {snapshot.record_id}, not {record.id}"
+        )
+    if not snapshot.analysis_text:
+        raise ValueError(f"Snapshot {snapshot.id} has no analysis_text to extract from")
+    if snapshot.analysis_hash:
+        actual_hash = hashlib.sha256(snapshot.analysis_text.encode()).hexdigest()
+        if actual_hash != snapshot.analysis_hash:
+            raise ValueError(
+                f"Snapshot {snapshot.id} analysis_text does not match its recorded "
+                f"analysis_hash — snapshot integrity check failed"
+            )
+
+    input_data = L1Input(
+        work_id=f"W{record.work_id}",
+        record_id=record.record_id,
+        title=record.title,
+        authors=[a["name"] for a in record.authors],
+        abstract=snapshot.analysis_text,
+        journal=record.journal,
+        publication_date=record.publication_date.isoformat() if record.publication_date else None,
+        evidence_level=record.evidence_level,
+        snapshot_id=snapshot.id,
+    )
+    output = await generate_l1_card(input_data, llm_client)
+    return await persist_l1_artifact(session, record, snapshot, output)
+
+
 async def persist_l1_artifact(
     session: AsyncSession,
     record: Record,
-    snapshot: SourceSnapshot | None,
+    snapshot: SourceSnapshot,
     output: L1Output,
 ) -> AnalysisArtifact:
     """
-    Persist an L1Output as an AnalysisArtifact and render its Markdown.
+    Persist an L1Output as an AnalysisArtifact, idempotently.
 
-    Links the artifact to the SourceSnapshot used during generation so the
-    analysis can always be traced back to the exact abstract text it used.
+    Same record + same snapshot + same skill/schema version returns the
+    existing artifact instead of creating a duplicate (safe to call again
+    after a retry). A change in snapshot or skill/schema version creates a
+    new artifact linked via supersedes_id, preserving history rather than
+    overwriting it.
     """
-    artifact_id = f"A_L1_{record.record_id}"
-    markdown = render_l1_markdown(record, snapshot, output)
+    existing_stmt = (
+        select(AnalysisArtifact)
+        .where(
+            AnalysisArtifact.record_id == record.id,
+            AnalysisArtifact.snapshot_id == snapshot.id,
+            AnalysisArtifact.analysis_type == "L1",
+            AnalysisArtifact.skill_version == SKILL_VERSION,
+            AnalysisArtifact.schema_version == SCHEMA_VERSION,
+        )
+        .order_by(AnalysisArtifact.created_at.desc())
+    )
+    existing = (await session.execute(existing_stmt)).scalars().first()
+    if existing:
+        return existing
 
+    prior_stmt = (
+        select(AnalysisArtifact)
+        .where(
+            AnalysisArtifact.record_id == record.id,
+            AnalysisArtifact.analysis_type == "L1",
+        )
+        .order_by(AnalysisArtifact.created_at.desc())
+    )
+    prior = (await session.execute(prior_stmt)).scalars().first()
+
+    markdown = render_l1_markdown(record, snapshot, output)
     artifact = AnalysisArtifact(
-        artifact_id=artifact_id,
+        artifact_id=uuid.uuid4().hex,
         record_id=record.id,
-        snapshot_id=snapshot.id if snapshot else None,
+        snapshot_id=snapshot.id,
         analysis_type="L1",
+        skill_version=SKILL_VERSION,
+        schema_version=SCHEMA_VERSION,
         content=output.model_dump(),
         markdown=markdown,
+        supersedes_id=prior.id if prior else None,
     )
     session.add(artifact)
     await session.flush()
@@ -108,7 +183,7 @@ async def persist_l1_artifact(
 
 def render_l1_markdown(
     record: Record,
-    snapshot: SourceSnapshot | None,
+    snapshot: SourceSnapshot,
     output: L1Output,
 ) -> str:
     """Render an L1Output to Markdown, grounding each field in its evidence span."""
@@ -158,10 +233,8 @@ def render_l1_markdown(
 
     # Provenance footer
     snap_note = (
-        f"snapshot `{snapshot.id}` (hash: `{snapshot.content_hash or 'n/a'}`, "
+        f"snapshot `{snapshot.id}` (hash: `{snapshot.analysis_hash or 'n/a'}`, "
         f"source: {snapshot.source_name}, fetched: {snapshot.fetched_at.date()})"
-        if snapshot
-        else "no snapshot"
     )
     lines += [
         "---",

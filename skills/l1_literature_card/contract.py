@@ -6,10 +6,31 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
+# Bump these whenever prompt semantics or the L1Output schema change —
+# used by AnalysisArtifact for idempotency/versioning.
+SKILL_VERSION = "l1-literature-card-v2"
+SCHEMA_VERSION = "2"
+
+# The closed set of valid evidence_spans keys. Anything else is rejected by
+# the validator — evidence_spans must only ever describe the three fields
+# it's meant to ground, never arbitrary model-invented keys.
+ALLOWED_EVIDENCE_SPAN_KEYS = {"research_object", "major_method", "author_reported_result"}
+
+
 class MissingReason(str, Enum):
+    """
+    描述"来源里有没有说这件事"，即内容层面的缺失原因。
+
+    这个枚举只回答"摘要说了什么/没说什么"，绝不描述"模型抽取失败了"——
+    模型解析/处理层面的失败（LLM 返回的 JSON 不合 schema、调用异常等）
+    已经在 generate_l1_card / LLMClient.call_with_schema 里以异常的形式
+    向上抛出，不会以字段值的形式出现在 L1Output 里。把两者混在一个枚举
+    里会让"字段为 null 因为源文没提" 和 "整次生成其实是失败的" 变得无法
+    区分。
+    """
+
     NOT_STATED = "NOT_STATED"          # 摘要中未提及该信息
     NOT_APPLICABLE = "NOT_APPLICABLE"  # 与本研究类型不相关
-    PARSE_FAILED = "PARSE_FAILED"      # LLM 未能可靠提取
 
 
 class L1Input(BaseModel):
@@ -21,7 +42,7 @@ class L1Input(BaseModel):
     journal: str | None = None
     publication_date: str | None = None
     evidence_level: str = Field(pattern="^E[1-5]$")
-    snapshot_id: int | None = None  # links artifact to the SourceSnapshot used
+    snapshot_id: int  # links artifact to the SourceSnapshot whose text was analyzed
 
     class Config:
         json_schema_extra = {
@@ -52,6 +73,7 @@ class L1Output(BaseModel):
     )
 
     tags: list[str] = Field(
+        min_length=3,
         max_length=5,
         description="3-5个标签，例如研究类型、领域、技术",
     )

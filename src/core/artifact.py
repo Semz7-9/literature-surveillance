@@ -6,6 +6,11 @@ import hashlib
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Record, SourceSnapshot
+from .text_normalize import normalize_abstract_text, NORMALIZER_VERSION
+
+
+def _hash(text: str | None) -> str | None:
+    return hashlib.sha256(text.encode()).hexdigest() if text else None
 
 
 async def create_source_snapshot(
@@ -16,17 +21,20 @@ async def create_source_snapshot(
     """
     Capture record.abstract as an immutable SourceSnapshot.
 
-    Call this immediately after creating a Record so that EvidenceSpans
-    (and L1 evidence_spans grounding) always reference a stable text anchor
-    rather than the mutable Record.abstract field.
+    Call this immediately after creating a Record so that evidence_spans
+    grounding always references a stable, plain-text anchor instead of the
+    mutable, possibly-markup-laden Record.abstract field.
     """
-    text = record.abstract or ""
-    content_hash = hashlib.sha256(text.encode()).hexdigest() if text else None
+    raw = record.abstract
+    analysis = normalize_abstract_text(raw)
 
     snapshot = SourceSnapshot(
         record_id=record.id,
-        abstract_text=text or None,
-        content_hash=content_hash,
+        raw_abstract=raw,
+        analysis_text=analysis,
+        raw_hash=_hash(raw),
+        analysis_hash=_hash(analysis),
+        normalizer_version=NORMALIZER_VERSION if analysis else None,
         source_name=source_name,
     )
     session.add(snapshot)

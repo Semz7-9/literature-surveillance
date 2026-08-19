@@ -283,17 +283,22 @@ class SourceSnapshot(Base):
     """
     Record 摘要文本的不变快照
 
-    abstract 在后续重新抓取时可能被覆盖。EvidenceSpan 将指向
-    snapshot.id，而不是 Record.abstract，避免"证据锚点在元数据
-    更新后失效"的问题。这是最小版本：只捕获 abstract 文本和来源。
+    raw_abstract 保留来源原文（可能含 JATS/XML 标签）；analysis_text 是
+    经过 normalize_abstract_text() 处理后的纯文本版本——LLM 抽取和
+    evidence_spans 逐字匹配都必须针对 analysis_text，不能针对
+    raw_abstract 或可变的 Record.abstract，否则标签会导致 "证据在原文
+    里找不到" 的伪失败，而且证据锚点会在 Record 被重新抓取覆盖后失效。
     """
     __tablename__ = "source_snapshots"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     record_id: Mapped[int] = mapped_column(ForeignKey("records.id"), index=True)
 
-    abstract_text: Mapped[Optional[str]] = mapped_column(Text)
-    content_hash: Mapped[Optional[str]] = mapped_column(String(64))  # SHA-256 hex
+    raw_abstract: Mapped[Optional[str]] = mapped_column(Text)
+    analysis_text: Mapped[Optional[str]] = mapped_column(Text)
+    raw_hash: Mapped[Optional[str]] = mapped_column(String(64))  # SHA-256 of raw_abstract
+    analysis_hash: Mapped[Optional[str]] = mapped_column(String(64))  # SHA-256 of analysis_text
+    normalizer_version: Mapped[Optional[str]] = mapped_column(String(32))
     source_name: Mapped[str] = mapped_column(String(64))  # "crossref", "pubmed", etc.
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -305,7 +310,11 @@ class AnalysisArtifact(Base):
     持久化的分析输出（L1/L2/L3 等）
 
     analysis 结果落盘到这里，不再只是打印。snapshot_id 指向分析时
-    使用的原始文本快照，保证"用什么数据得出什么结论"可复现。
+    使用的原始文本快照（必填，每个 L1 artifact 都必须可追溯到具体
+    snapshot），保证"用什么数据得出什么结论"可复现。skill_version/
+    schema_version 记录生成时使用的 skill 语义和输出 schema 版本，
+    supersedes_id 指向被取代的上一个 artifact，用于同一 record 重新
+    生成（重试/模型升级/摘要更新）时保留历史而不是产生 UNIQUE 冲突。
     """
     __tablename__ = "analysis_artifacts"
 
@@ -313,11 +322,15 @@ class AnalysisArtifact(Base):
     artifact_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
 
     record_id: Mapped[int] = mapped_column(ForeignKey("records.id"), index=True)
-    snapshot_id: Mapped[Optional[int]] = mapped_column(
+    snapshot_id: Mapped[int] = mapped_column(
         ForeignKey("source_snapshots.id"), index=True
     )
 
     analysis_type: Mapped[str] = mapped_column(String(32), index=True)  # "L1", "L2", etc.
+    skill_version: Mapped[str] = mapped_column(String(32))
+    schema_version: Mapped[str] = mapped_column(String(16))
+    supersedes_id: Mapped[Optional[int]] = mapped_column(ForeignKey("analysis_artifacts.id"))
+
     content: Mapped[dict] = mapped_column(JSON)  # analysis output dict
     markdown: Mapped[Optional[str]] = mapped_column(Text)  # rendered Markdown
 
