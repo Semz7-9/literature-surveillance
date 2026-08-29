@@ -59,32 +59,51 @@ class MonitorScheduler:
         now = now or datetime.utcnow()
         self.last_tick = now
         async with self.database.get_session() as session:
-            subscriptions = (await session.execute(
-                select(MonitorSubscription).where(MonitorSubscription.enabled.is_(True))
+            subscription_ids = (await session.execute(
+                select(MonitorSubscription).where(
+                    MonitorSubscription.enabled.is_(True)
+                ).order_by(MonitorSubscription.id)
             )).scalars().all()
-            due_ids: list[int] = []
-            for subscription in subscriptions:
+            subscription_ids = [subscription.id for subscription in subscription_ids]
+        due_ids: list[int] = []
+        for subscription_id in subscription_ids:
+            adapter = None
+            llm_client = None
+            async with self.database.get_session() as session:
+                subscription = await session.get(MonitorSubscription, subscription_id)
+                if subscription is None or not subscription.enabled:
+                    continue
                 cursor = (await session.execute(select(SourceCursor).where(
                     SourceCursor.subscription_id == subscription.id
                 ))).scalar_one_or_none()
-                interval = max(1, int(subscription.config.get(
-                    "interval_hours", self.default_interval_hours
-                )))
-                if cursor and cursor.last_checked_at and cursor.last_checked_at > now - timedelta(hours=interval):
-                    continue
+                if cursor and cursor.last_checked_at:
+                    if (cursor.state or {}).get("has_more"):
+                        cooldown = timedelta(minutes=max(1, int(subscription.config.get(
+                            "backlog_cooldown_minutes", 5
+                        ))))
+                    else:
+                        cooldown = timedelta(hours=max(1, int(subscription.config.get(
+                            "interval_hours", self.default_interval_hours
+                        ))))
+                    if cursor.last_checked_at > now - cooldown:
+                        continue
                 source = await session.get(Source, subscription.source_id)
                 if source is None:
                     continue
-                adapter = self.adapter_factory(source)
-                llm_client = await self.llm_factory()
                 try:
+                    adapter = self.adapter_factory(source)
+                    llm_client = await self.llm_factory()
                     await run_monitor_subscription(
                         session, subscription, adapter, llm_client, now=now
                     )
                     await session.commit()
                     due_ids.append(subscription.id)
+                except Exception:
+                    await session.rollback()
+                    continue
                 finally:
-                    await adapter.close()
+                    if adapter:
+                        await adapter.close()
                     if llm_client:
                         await llm_client.close()
-            return due_ids
+        return due_ids

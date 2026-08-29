@@ -20,6 +20,14 @@ class CrossrefConfig(BaseModel):
     timeout: float = Field(default=30.0, description="请求超时（秒）")
 
 
+class PubMedConfig(BaseModel):
+    """NCBI E-utilities 配置；API key 可选，但建议提供联系邮箱。"""
+
+    email: str | None = Field(default=None)
+    api_key: str | None = Field(default=None)
+    timeout: float = Field(default=30.0, description="请求超时（秒）")
+
+
 class LLMConfig(BaseModel):
     """LLM API 配置"""
 
@@ -43,6 +51,7 @@ class Config(BaseModel):
 
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     crossref: CrossrefConfig
+    pubmed: PubMedConfig = Field(default_factory=PubMedConfig)
     llm: LLMConfig
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
 
@@ -82,6 +91,11 @@ def create_default_config(output_path: str | Path = "config.yaml") -> None:
         "crossref": {
             "email": "your.email@example.com",
             "rate_limit": 10.0,
+            "timeout": 30.0,
+        },
+        "pubmed": {
+            "email": "your.email@example.com",
+            "api_key": None,
             "timeout": 30.0,
         },
         "llm": {

@@ -76,6 +76,13 @@ def test_ui0_inbox_detail_and_actions(tmp_path: Path):
         })
         assert created.status_code == 200
         assert "PubMed Auto" in created.text
+        assert "source_id=" in created.text
+        rejected = client.post("/monitor/subscriptions", data={
+            "name": "Invalid PubMed update", "provider": "pubmed",
+            "subscription_type": "topic", "query": "KRAS",
+            "feed_mode": "update", "interval_hours": "24",
+        })
+        assert rejected.status_code == 422
         detail = client.get("/works/1")
         assert detail.status_code == 200
         assert "A concise summary." in detail.text

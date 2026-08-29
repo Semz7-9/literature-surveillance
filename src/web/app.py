@@ -58,9 +58,13 @@ def create_app(
     def make_pubmed() -> PubMedAdapter:
         if pubmed_factory:
             return pubmed_factory()
-        email = runtime_config.crossref.email if runtime_config else "local-monitor@example.invalid"
-        timeout = runtime_config.crossref.timeout if runtime_config else 30.0
-        return PubMedAdapter(email=email, timeout=timeout)
+        email = (
+            runtime_config.pubmed.email or runtime_config.crossref.email
+            if runtime_config else "local-monitor@example.invalid"
+        )
+        timeout = runtime_config.pubmed.timeout if runtime_config else 30.0
+        api_key = runtime_config.pubmed.api_key if runtime_config else None
+        return PubMedAdapter(email=email, api_key=api_key, timeout=timeout)
 
     def make_adapter(source: Source):
         if source.name == "pubmed":
@@ -153,6 +157,7 @@ def create_app(
         notice: str | None = None,
         period: str = "week",
         subscription_id: int | None = None,
+        source_id: int | None = None,
         discovered: int | None = None,
         updated: int | None = None,
         has_more: int | None = None,
@@ -174,6 +179,8 @@ def create_app(
                 )
             if subscription_id:
                 event_stmt = event_stmt.where(DiscoveryEvent.subscription_id == subscription_id)
+            if source_id:
+                event_stmt = event_stmt.where(DiscoveryEvent.source_id == source_id)
             events = (await session.execute(
                 event_stmt.order_by(DiscoveryEvent.discovered_at.desc())
             )).scalars().all()
@@ -227,6 +234,7 @@ def create_app(
             return templates.TemplateResponse(request, "inbox.html", {
                 "cards": cards, "selected_state": state, "notice": notice,
                 "period": period, "selected_subscription": subscription_id,
+                "selected_source": source_id,
                 "subscriptions": subscriptions, "sources": sources,
                 "health": health, "run_discovered": discovered,
                 "latest_runs": latest_runs, "run_updated": updated,
@@ -324,6 +332,8 @@ def create_app(
             raise HTTPException(422, "feed mode 必须是 created 或 update")
         if provider not in {"crossref", "pubmed"}:
             raise HTTPException(422, "目前仅支持 Crossref 或 PubMed")
+        if provider == "pubmed" and feed_mode != "created":
+            raise HTTPException(422, "PubMed v0.1 仅支持 discovery/created feed")
         if interval_hours not in {6, 12, 24, 168}:
             raise HTTPException(422, "检查频率不受支持")
         if subscription_type == "journal" and not issn.strip():
