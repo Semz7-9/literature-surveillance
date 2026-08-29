@@ -130,7 +130,7 @@ async def test_explicit_relation_confirms_when_target_already_ingested(db: Datab
         assert preprint.work_id == vor.work_id  # 合并到同一个 Work
 
 
-async def test_explicit_relation_reverse_import_order_is_lost_without_pending_relation(
+async def test_one_way_pending_relation_resolves_when_target_arrives(
     db: Database,
 ):
     """
@@ -165,7 +165,9 @@ async def test_explicit_relation_reverse_import_order_is_lost_without_pending_re
         vor, _ = await get_or_create_record(session, "10.1/vor2", vor_factory)
         vor_edge, vor_materialized = await resolve_and_maybe_materialize(session, resolver, vor)
 
-        assert vor.work_id != preprint.work_id
+        assert vor.work_id == preprint.work_id
+        assert vor_edge.evidence_type == IdentityEvidenceType.EXPLICIT_CROSSREF_RELATION.value
+        assert vor_materialized is True
 
 
 async def test_reverse_import_order_resolves_via_reciprocal_relation(db: Database):
@@ -404,10 +406,8 @@ async def test_confirm_edge_rejects_second_confirmation_for_same_record(db: Data
 
         # 先 reject 旧的，再 confirm 新的才应该成功
         await resolver.reject_edge(edge_a.id)
-        from src.core.work_identity import IdentifierConflictError
-
-        with pytest.raises(IdentifierConflictError):
-            await resolver.confirm_edge(edge_b.id)
+        assert await resolver._find_work_by_identifier("doi", r1.doi) is None
+        await resolver.confirm_edge(edge_b.id)
         await session.refresh(r1)
-        assert r1.work_id is None
-        assert edge_b.status == IdentityStatus.CANDIDATE.value
+        assert r1.work_id == other_work.id
+        assert edge_b.status == IdentityStatus.CONFIRMED.value

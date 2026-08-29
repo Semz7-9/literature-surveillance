@@ -27,6 +27,9 @@ class WorkIdentityResolver:
         self.session = session
 
     async def resolve_or_create_work(self, record: Record, crossref_relations: dict | None = None) -> IdentityEdge:
+        edge = await self._resolve_from_pending_targets(record)
+        if edge:
+            return edge
         if crossref_relations:
             edge = await self._resolve_from_explicit_relation(record, crossref_relations)
             if edge:
@@ -37,6 +40,35 @@ class WorkIdentityResolver:
                 return await self._create_identity_edge(record, work, IdentityEvidenceType.DOI_EXACT, 1.0, IdentityStatus.CONFIRMED, {"reason": "DOI already registered to this Work"})
         edge = await self._fuzzy_match_work(record)
         return edge if edge else await self._create_new_work(record)
+
+    async def _resolve_from_pending_targets(self, record: Record) -> Optional[IdentityEdge]:
+        """Use earlier one-way relations before creating a new Work.
+
+        A newly ingested VoR may not contain the reciprocal Crossref relation,
+        but its DOI can still be the target of a pending preprint relation.
+        """
+        target_works: dict[int, Work] = {}
+        for identifier_type, identifier_value in self._record_identifiers(record):
+            stmt = select(PendingIdentifierRelation).where(
+                PendingIdentifierRelation.target_identifier_type == identifier_type,
+                PendingIdentifierRelation.target_identifier_value == identifier_value,
+                PendingIdentifierRelation.status == PendingRelationStatus.PENDING.value,
+            )
+            for relation in (await self.session.execute(stmt)).scalars().all():
+                source = await self.session.get(Record, relation.source_record_id)
+                if source and source.work_id:
+                    work = await self.session.get(Work, source.work_id)
+                    if work and work.status == WorkStatus.ACTIVE.value:
+                        target_works[work.id] = work
+        # Multiple active sources disagreeing is evidence for review, not an
+        # excuse to attach the arriving Record arbitrarily.
+        if len(target_works) != 1:
+            return None
+        work = next(iter(target_works.values()))
+        return await self._create_identity_edge(
+            record, work, IdentityEvidenceType.EXPLICIT_CROSSREF_RELATION, 1.0,
+            IdentityStatus.CONFIRMED, {"reason": "pending identifier relation target"},
+        )
 
     async def materialize_if_confirmed(self, record: Record, edge: IdentityEdge) -> bool:
         if edge.status != IdentityStatus.CONFIRMED.value:
@@ -67,6 +99,36 @@ class WorkIdentityResolver:
         for identifier_type, identifier_value in identifiers:
             await self.reconcile_pending_for_identifier(identifier_type, identifier_value, record)
         await self.recompute_work_projection(work)
+
+    async def detach_record_from_work(self, record: Record) -> None:
+        """Undo a materialized identity and rebuild its derived identifiers."""
+        if record.work_id is None:
+            return
+        work = await self.session.get(Work, record.work_id)
+        record.work_id = None
+        await self.session.flush()
+        if work:
+            await self._rebuild_work_identifiers(work)
+            await self.recompute_work_projection(work)
+
+    async def _rebuild_work_identifiers(self, work: Work) -> None:
+        """WorkIdentifier is a Phase-0 projection of the Work's current Records."""
+        records = (await self.session.execute(
+            select(Record).where(Record.work_id == work.id)
+        )).scalars().all()
+        expected = {identifier for record in records for identifier in self._record_identifiers(record)}
+        existing = (await self.session.execute(
+            select(WorkIdentifier).where(WorkIdentifier.work_id == work.id)
+        )).scalars().all()
+        for identifier in existing:
+            if (identifier.identifier_type, identifier.identifier_value) not in expected:
+                await self.session.delete(identifier)
+        existing_keys = {(item.identifier_type, item.identifier_value) for item in existing}
+        for identifier_type, identifier_value in expected - existing_keys:
+            self.session.add(WorkIdentifier(
+                work_id=work.id, identifier_type=identifier_type, identifier_value=identifier_value
+            ))
+        await self.session.flush()
 
     async def _resolve_from_explicit_relation(self, record: Record, relations: dict) -> Optional[IdentityEdge]:
         for relation_type in INTRA_WORK_RELATIONS:
@@ -141,13 +203,40 @@ class WorkIdentityResolver:
         self.session.add(WorkMergeAudit(merged_from_work_id=merge.id, merged_into_work_id=keep.id, reason=reason, evidence=evidence))
         await self.session.flush()
         await self.recompute_work_projection(keep)
+        await self.recompute_work_projection(merge)
+        await self._reconcile_identity_state_after_merge(keep)
         return keep
+
+    async def _reconcile_identity_state_after_merge(self, keep: Work) -> None:
+        """Close conflict artefacts made redundant by a confirmed Work merge."""
+        candidates = (await self.session.execute(select(IdentityEdge).where(
+            IdentityEdge.target_work_id == keep.id,
+            IdentityEdge.status == IdentityStatus.CANDIDATE.value,
+        ))).scalars().all()
+        for edge in candidates:
+            source = await self.session.get(Record, edge.source_record_id)
+            if source and source.work_id == keep.id:
+                edge.status = IdentityStatus.SUPERSEDED.value
+                edge.updated_at = datetime.utcnow()
+        conflicts = (await self.session.execute(select(PendingIdentifierRelation).where(
+            PendingIdentifierRelation.status == PendingRelationStatus.CONFLICT.value,
+        ))).scalars().all()
+        for relation in conflicts:
+            source = await self.session.get(Record, relation.source_record_id)
+            target_work = await self._find_work_by_identifier(
+                relation.target_identifier_type, relation.target_identifier_value
+            )
+            if source and source.work_id == keep.id and target_work and target_work.id == keep.id:
+                relation.status = PendingRelationStatus.RESOLVED.value
+                relation.resolved_at = datetime.utcnow()
+        await self.session.flush()
 
     async def recompute_work_projection(self, work: Work) -> None:
         records = (await self.session.execute(select(Record).where(Record.work_id == work.id))).scalars().all()
         if not records:
             work.preferred_record_id = work.first_public_record_id = None
             work.canonical_doi = None
+            await self.session.flush()
             return
         def date_key(record: Record):
             return (record.publication_date is not None, record.publication_date or datetime.min, record.id)
@@ -229,7 +318,4 @@ class WorkIdentityResolver:
         edge.status, edge.updated_at = IdentityStatus.REJECTED.value, datetime.utcnow()
         record = await self.session.get(Record, edge.source_record_id)
         if record.work_id == edge.target_work_id:
-            record.work_id = None
-            work = await self.session.get(Work, edge.target_work_id)
-            await self.session.flush()
-            await self.recompute_work_projection(work)
+            await self.detach_record_from_work(record)

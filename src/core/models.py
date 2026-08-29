@@ -112,6 +112,7 @@ class IdentityStatus(str, Enum):
     PROVISIONAL = "PROVISIONAL"  # 系统自动确认，但可能错
     CONFIRMED = "CONFIRMED"  # 人工确认或高置信度自动确认
     REJECTED = "REJECTED"  # 明确不是同一个 Work
+    SUPERSEDED = "SUPERSEDED"  # 后续 Work merge 已使候选边失去独立意义
 
 
 class WorkStatus(str, Enum):

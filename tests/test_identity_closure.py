@@ -51,7 +51,9 @@ async def test_preprint_then_vor_closes_pending_relation_and_projects_work(db: D
         vor = record("10.1/v", "Research")
         session.add(vor)
         await session.flush()
-        await resolve_and_attach(resolver, vor, {"has-preprint": [{"id": "10.1/p"}]})
+        # The arriving VoR has no reciprocal relation.  It must still resolve
+        # from P's persisted one-way pending relation.
+        await resolve_and_attach(resolver, vor)
 
         work = await session.get(Work, preprint.work_id)
         assert vor.work_id == work.id
@@ -111,3 +113,9 @@ async def test_merge_preserves_audit_and_tombstones_old_work(db: Database):
         assert work_merge.merged_into_work_id == work_keep.id
         audit = (await session.execute(select(WorkMergeAudit))).scalar_one()
         assert audit.merged_from_work_id == work_merge.id
+        assert pending.status == PendingRelationStatus.RESOLVED.value
+        await session.refresh(candidate)
+        assert candidate.status == IdentityStatus.SUPERSEDED.value
+        assert work_merge.preferred_record_id is None
+        assert work_merge.first_public_record_id is None
+        assert work_merge.canonical_doi is None
