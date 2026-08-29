@@ -85,3 +85,29 @@ async def test_identifier_backfill_is_idempotent_and_conflicts_do_not_reassign(d
             await resolver.attach_record_to_work(second, other)
         assert second.work_id is None
 
+
+async def test_merge_preserves_audit_and_tombstones_old_work(db: Database):
+    async with db.get_session() as session:
+        resolver = WorkIdentityResolver(session)
+        preprint = record("10.1/p2", "Research", preprint=True)
+        vor = record("10.1/v2", "Research Version")
+        session.add_all([preprint, vor])
+        await session.flush()
+        await resolve_and_attach(resolver, preprint)
+        await resolve_and_attach(resolver, vor)
+        work_keep = await session.get(Work, preprint.work_id)
+        work_merge = await session.get(Work, vor.work_id)
+        pending = await resolver._create_pending_relation(preprint, "doi", "10.1/v2", "is-preprint-of")
+        await resolver.reconcile_pending_for_identifier("doi", "10.1/v2", vor)
+        assert pending.status == PendingRelationStatus.CONFLICT.value
+        candidate = (await session.execute(select(IdentityEdge).where(IdentityEdge.source_record_id == preprint.id, IdentityEdge.status == IdentityStatus.CANDIDATE.value))).scalar_one()
+        assert candidate.target_work_id == work_merge.id
+
+        await resolver.merge_work(work_keep, work_merge, reason="explicit preprint relation", evidence={"pending_relation_id": pending.id}, confirmed=True)
+        await session.refresh(vor)
+        await session.refresh(work_merge)
+        assert vor.work_id == work_keep.id
+        assert work_merge.status == WorkStatus.MERGED.value
+        assert work_merge.merged_into_work_id == work_keep.id
+        audit = (await session.execute(select(WorkMergeAudit))).scalar_one()
+        assert audit.merged_from_work_id == work_merge.id
