@@ -52,24 +52,28 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
         return {"work": work, "record": preferred, "state": state, "artifact": artifact}
 
     @app.get("/", response_class=HTMLResponse)
-    async def inbox(request: Request, state: str | None = None):
+    async def inbox(request: Request, state: str | None = None, notice: str | None = None):
         async with database.get_session() as session:
             stmt = select(Work).where(Work.status == WorkStatus.ACTIVE.value).order_by(Work.updated_at.desc())
             works = (await session.execute(stmt)).scalars().all()
             cards = [await work_view(work, session) for work in works]
             if state:
                 cards = [card for card in cards if card["state"] and card["state"].state == state]
-            return templates.TemplateResponse(request, "inbox.html", {"cards": cards, "selected_state": state})
+            return templates.TemplateResponse(request, "inbox.html", {
+                "cards": cards, "selected_state": state, "notice": notice,
+            })
 
     @app.get("/works/{work_id}", response_class=HTMLResponse)
-    async def paper_detail(request: Request, work_id: int):
+    async def paper_detail(request: Request, work_id: int, notice: str | None = None):
         async with database.get_session() as session:
             work = await session.get(Work, work_id)
             if work is None:
                 raise HTTPException(404, "Work not found")
             data = await work_view(work, session)
             content = data["artifact"].content if data["artifact"] else {}
-            return templates.TemplateResponse(request, "paper_detail.html", {**data, "content": content})
+            return templates.TemplateResponse(request, "paper_detail.html", {
+                **data, "content": content, "notice": notice,
+            })
 
     @app.get("/works/{work_id}/debug", response_class=HTMLResponse)
     async def debug_work(request: Request, work_id: int):
@@ -110,7 +114,7 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
             else:
                 session.add(UserWorkState(work_id=work_id, state=state, match_reason={"source": "UI-0"}))
             await session.commit()
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url=f"/?notice={state}", status_code=303)
 
     @app.post("/works/{work_id}/reading-queue")
     async def queue_l2(work_id: int):
@@ -123,7 +127,7 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
             if not existing:
                 session.add(ReadingQueue(work_id=work_id, requested_level="L2", status="pending"))
                 await session.commit()
-        return RedirectResponse(url=f"/works/{work_id}", status_code=303)
+        return RedirectResponse(url=f"/works/{work_id}?notice=queued", status_code=303)
 
     @app.get("/api/inbox")
     async def api_inbox():
