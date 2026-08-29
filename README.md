@@ -76,7 +76,7 @@ Claim Status (基于它的断言是否有效)
 
 MIT
 
-## UI-0（交互原型）
+## Literature Monitor v0.1
 
 在已有 SQLite 数据库上启动最小阅读界面：
 
@@ -84,6 +84,6 @@ MIT
 uvicorn src.web.app:app --reload
 ```
 
-打开 `http://127.0.0.1:8000` 可浏览 Inbox、查看 L1 证据与 Debug 视图，并执行 Keep、Ignore、Queue L2。默认使用 `config.yaml` 的数据库路径；没有该文件时使用 `data/literature.db`。
+打开 `http://127.0.0.1:8000` 可管理 Crossref / PubMed 期刊与主题订阅，设置启停和检查频率，并在自然周收件箱执行 Keep、Ignore、Queue L2。默认使用 `config.yaml` 的数据库路径；没有该文件时使用 `data/literature.db`。
 
-进入“文献更新”后，可创建 Crossref 期刊订阅（ISSN）或主题订阅（检索式），再点击“立即检查”。系统会把新发现依次送入现有的 DOI 规范化、Work identity、Snapshot 和 L1 流程；没有配置 LLM API key 时仍会完成发现和 L0 入库，但不会生成新的 L1 卡片。
+将 `config.yaml` 中的 `monitor.enabled` 设为 `true` 后，应用内调度器会按每个订阅的频率自动运行；无需打开页面或点击检查，但运行 `uvicorn` 的进程需要保持在线。系统会把新发现送入现有的 Work identity、Snapshot 和 L1 流程。PubMed 会补充 Abstract 与 MeSH；没有配置 LLM API key 时仍会完成发现和 L0/E1 入库，但不会生成新的 L1 卡片。“立即检查”保留用于首次配置和排障。

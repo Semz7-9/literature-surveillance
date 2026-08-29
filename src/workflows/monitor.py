@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..adapters.crossref import CrossrefAdapter, parse_crossref_metadata
+from ..adapters.pubmed import PubMedAdapter, parse_pubmed_metadata
 from ..core.artifact import create_source_snapshot
 from ..core.ingestion import get_or_create_record
 from ..core.models import (
@@ -96,9 +97,13 @@ async def _process_event(
     observation_changed: bool,
 ) -> None:
     raw_work = event.raw_metadata
-    doi = normalize_doi(event.external_identifier)
     try:
-        metadata = parse_crossref_metadata(raw_work)
+        metadata = (
+            parse_pubmed_metadata(raw_work)
+            if source.name == "pubmed" else parse_crossref_metadata(raw_work)
+        )
+        doi = metadata["doi"]
+        pmid = str(metadata["other_ids"].get("pmid", "")).strip()
 
         def record_factory(normalized_doi: str) -> Record:
             return Record(
@@ -113,7 +118,20 @@ async def _process_event(
                 extra_metadata=metadata["other_ids"],
             )
 
-        record, created = await get_or_create_record(session, doi, record_factory)
+        if doi:
+            record, created = await get_or_create_record(session, doi, record_factory)
+        else:
+            record_id = f"R_pmid_{pmid}"
+            record = (await session.execute(
+                select(Record).where(Record.record_id == record_id)
+            )).scalar_one_or_none()
+            created = record is None
+            if record is None:
+                record = record_factory("")
+                record.record_id = record_id
+                record.doi = None
+                session.add(record)
+                await session.flush()
         hydrated = False if created else hydrate_record_from_observation(record, metadata)
         if created:
             result.created += 1
@@ -151,12 +169,12 @@ async def _process_event(
 async def run_monitor_subscription(
     session: AsyncSession,
     subscription: MonitorSubscription,
-    adapter: CrossrefAdapter,
+    adapter: CrossrefAdapter | PubMedAdapter,
     llm_client: LLMClient | None = None,
     *,
     now: datetime | None = None,
 ) -> MonitorRunResult:
-    """Process recoverable local events, then fetch a budgeted Crossref delta."""
+    """Process recoverable local events, then fetch a budgeted provider delta."""
     result = MonitorRunResult()
     now = now or datetime.utcnow()
     source = await session.get(Source, subscription.source_id)
@@ -251,19 +269,24 @@ async def run_monitor_subscription(
             health.latency_ms = (datetime.utcnow() - fetch_started).total_seconds() * 1000
             for raw_work in items:
                 raw_doi = raw_work.get("DOI")
-                if not raw_doi:
+                raw_pmid = str(raw_work.get("PMID", "")).strip()
+                if not raw_doi and not raw_pmid:
                     result.failed += 1
                     continue
-                doi = normalize_doi(raw_doi)
+                external_identifier = normalize_doi(raw_doi) if raw_doi else f"pmid:{raw_pmid}"
                 observed_hash = metadata_hash(raw_work)
                 event = (await session.execute(select(DiscoveryEvent).where(
                     DiscoveryEvent.subscription_id == subscription.id,
-                    DiscoveryEvent.external_identifier == doi,
+                    DiscoveryEvent.external_identifier == external_identifier,
                 ))).scalar_one_or_none()
                 if event is None:
                     event = DiscoveryEvent(
                         source_id=source.id, subscription_id=subscription.id,
-                        external_identifier=doi, source_url=f"https://doi.org/{doi}",
+                        external_identifier=external_identifier,
+                        source_url=(
+                            f"https://doi.org/{external_identifier}" if raw_doi
+                            else f"https://pubmed.ncbi.nlm.nih.gov/{raw_pmid}/"
+                        ),
                         raw_metadata=raw_work, status="DISCOVERED",
                         last_seen_at=now, last_metadata_hash=observed_hash,
                     )
@@ -307,10 +330,10 @@ async def run_monitor_subscription(
     cursor.cursor_value = adapter_cursor if has_more else None
     if not has_more and result.error is None:
         cursor.last_success_at = now
-    cursor.last_seen_identifier = next(
-        (normalize_doi(item["DOI"]) for item in reversed(locals().get("items", [])) if item.get("DOI")),
-        cursor.last_seen_identifier,
-    )
+    cursor.last_seen_identifier = next((
+        normalize_doi(item["DOI"]) if item.get("DOI") else f"pmid:{item['PMID']}"
+        for item in reversed(locals().get("items", [])) if item.get("DOI") or item.get("PMID")
+    ), cursor.last_seen_identifier)
     cursor.state = {
         "from_date": start.date().isoformat(), "until_date": until.date().isoformat(),
         "feed_mode": feed_mode,

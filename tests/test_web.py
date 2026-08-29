@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from src.core.models import (
     AnalysisArtifact, DiscoveryEvent, MonitorSubscription, Record, Source,
@@ -68,9 +69,37 @@ def test_ui0_inbox_detail_and_actions(tmp_path: Path):
         inbox = client.get("/monitor")
         assert inbox.status_code == 200
         assert "A real literature card" in inbox.text
+        assert "Weekly Inbox" in inbox.text
+        created = client.post("/monitor/subscriptions", data={
+            "name": "PubMed Auto", "provider": "pubmed", "subscription_type": "topic",
+            "query": "covalent inhibitors", "interval_hours": "24",
+        })
+        assert created.status_code == 200
+        assert "PubMed Auto" in created.text
         detail = client.get("/works/1")
         assert detail.status_code == 200
         assert "A concise summary." in detail.text
         assert client.post("/works/1/user-state", data={"state": "keep"}).status_code == 200
         assert client.post("/works/1/reading-queue").status_code == 200
         assert client.get("/api/inbox").json()[0]["work_id"] == "W-ui-test"
+
+    async def verify_subscription_controls():
+        async with app.state.database.get_session() as session:
+            subscription = (await session.execute(select(MonitorSubscription).where(
+                MonitorSubscription.name == "PubMed Auto"
+            ))).scalar_one()
+            subscription_id = subscription.id
+        with TestClient(app) as client:
+            assert client.post(
+                f"/monitor/subscriptions/{subscription_id}/frequency",
+                data={"interval_hours": "168"},
+            ).status_code == 200
+            assert client.post(
+                f"/monitor/subscriptions/{subscription_id}/toggle"
+            ).status_code == 200
+        async with app.state.database.get_session() as session:
+            subscription = await session.get(MonitorSubscription, subscription_id)
+            assert subscription.config["interval_hours"] == 168
+            assert subscription.enabled is False
+
+    asyncio.run(verify_subscription_controls())

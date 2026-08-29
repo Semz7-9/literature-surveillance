@@ -19,8 +19,10 @@ from ..core.models import (
     SourceHealth, UserWorkState, Work, WorkIdentifier, WorkMergeAudit, WorkStatus,
 )
 from ..adapters.crossref import CrossrefAdapter
+from ..adapters.pubmed import PubMedAdapter
 from ..llm.client import create_llm_client
 from ..workflows.monitor import run_monitor_subscription
+from ..workflows.scheduler import MonitorScheduler
 
 WEB_ROOT = Path(__file__).parent
 templates = Jinja2Templates(directory=str(WEB_ROOT / "templates"))
@@ -34,43 +36,71 @@ def default_database_path() -> Path:
 def create_app(
     database_path: str | Path | None = None,
     crossref_factory: Callable[[], CrossrefAdapter] | None = None,
+    pubmed_factory: Callable[[], PubMedAdapter] | None = None,
     llm_factory: Callable | None = None,
+    scheduler_enabled: bool | None = None,
 ) -> FastAPI:
     database = Database(database_path or default_database_path())
-
-    @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        await database.init_db()
-        yield
-        await database.close()
-
-    app = FastAPI(title="Literature Surveillance UI-0", lifespan=lifespan)
-    app.mount("/static", StaticFiles(directory=str(WEB_ROOT / "static")), name="static")
-    app.state.database = database
+    config_path = Path("config.yaml")
+    runtime_config = load_config(config_path) if config_path.exists() else None
 
     def make_crossref() -> CrossrefAdapter:
         if crossref_factory:
             return crossref_factory()
-        config_path = Path("config.yaml")
-        if config_path.exists():
-            config = load_config(config_path)
+        if runtime_config:
             return CrossrefAdapter(
-                email=config.crossref.email,
-                rate_limit=config.crossref.rate_limit,
-                timeout=config.crossref.timeout,
+                email=runtime_config.crossref.email,
+                rate_limit=runtime_config.crossref.rate_limit,
+                timeout=runtime_config.crossref.timeout,
             )
         return CrossrefAdapter(email="local-monitor@example.invalid")
+
+    def make_pubmed() -> PubMedAdapter:
+        if pubmed_factory:
+            return pubmed_factory()
+        email = runtime_config.crossref.email if runtime_config else "local-monitor@example.invalid"
+        timeout = runtime_config.crossref.timeout if runtime_config else 30.0
+        return PubMedAdapter(email=email, timeout=timeout)
+
+    def make_adapter(source: Source):
+        if source.name == "pubmed":
+            return make_pubmed()
+        if source.name == "crossref":
+            return make_crossref()
+        raise ValueError(f"不支持的监控来源：{source.name}")
 
     async def make_llm():
         if llm_factory:
             return await llm_factory()
-        config_path = Path("config.yaml")
-        if not config_path.exists():
+        if runtime_config is None:
             return None
-        config = load_config(config_path)
-        if not config.llm.api_key or config.llm.api_key.startswith("your-"):
+        if not runtime_config.llm.api_key or runtime_config.llm.api_key.startswith("your-"):
             return None
-        return await create_llm_client(config.llm.model_dump(), model_tier="cheap")
+        return await create_llm_client(runtime_config.llm.model_dump(), model_tier="cheap")
+
+    scheduler = MonitorScheduler(
+        database, make_adapter, make_llm,
+        default_interval_hours=(runtime_config.monitor.check_interval_hours if runtime_config else 24),
+    )
+    should_schedule = (
+        scheduler_enabled if scheduler_enabled is not None
+        else bool(runtime_config and runtime_config.monitor.enabled)
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        await database.init_db()
+        if should_schedule:
+            scheduler.start()
+        yield
+        await scheduler.stop()
+        await database.close()
+
+    app = FastAPI(title="Literature Surveillance v0.1", lifespan=lifespan)
+    app.mount("/static", StaticFiles(directory=str(WEB_ROOT / "static")), name="static")
+    app.state.database = database
+    app.state.monitor_scheduler = scheduler
+    app.state.scheduler_enabled = should_schedule
 
     async def work_view(work: Work, session, discovery: DiscoveryEvent | None = None) -> dict:
         preferred = await session.get(Record, work.preferred_record_id) if work.preferred_record_id else None
@@ -129,10 +159,19 @@ def create_app(
     ):
         async with database.get_session() as session:
             event_stmt = select(DiscoveryEvent).where(DiscoveryEvent.work_id.is_not(None))
+            now = datetime.utcnow()
+            week_start = (now - timedelta(days=now.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            week_end = week_start + timedelta(days=7)
             if period == "today":
-                event_stmt = event_stmt.where(DiscoveryEvent.discovered_at >= datetime.utcnow() - timedelta(days=1))
+                day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                event_stmt = event_stmt.where(DiscoveryEvent.discovered_at >= day_start)
             elif period == "week":
-                event_stmt = event_stmt.where(DiscoveryEvent.discovered_at >= datetime.utcnow() - timedelta(days=7))
+                event_stmt = event_stmt.where(
+                    DiscoveryEvent.discovered_at >= week_start,
+                    DiscoveryEvent.discovered_at < week_end,
+                )
             if subscription_id:
                 event_stmt = event_stmt.where(DiscoveryEvent.subscription_id == subscription_id)
             events = (await session.execute(
@@ -146,6 +185,29 @@ def create_app(
                 work = await session.get(Work, work_id)
                 if work and work.status == WorkStatus.ACTIVE.value:
                     cards.append(await work_view(work, session, event))
+            weekly_events = (await session.execute(select(DiscoveryEvent).where(
+                DiscoveryEvent.work_id.is_not(None),
+                DiscoveryEvent.discovered_at >= week_start,
+                DiscoveryEvent.discovered_at < week_end,
+            ).order_by(DiscoveryEvent.discovered_at.desc()))).scalars().all()
+            weekly_latest = {}
+            for event in weekly_events:
+                weekly_latest.setdefault(event.work_id, event)
+            weekly_cards = []
+            for work_id, event in weekly_latest.items():
+                work = await session.get(Work, work_id)
+                if work and work.status == WorkStatus.ACTIVE.value:
+                    weekly_cards.append(await work_view(work, session, event))
+            weekly_stats = {
+                "new": len(weekly_cards),
+                "l1": sum(card["artifact"] is not None for card in weekly_cards),
+                "no_abstract": sum(
+                    card["record"] is None or not card["record"].abstract for card in weekly_cards
+                ),
+                "unread": sum(
+                    card["state"] is None and card["queued"] is None for card in weekly_cards
+                ),
+            }
             if state == "unread":
                 cards = [card for card in cards if card["state"] is None and card["queued"] is None]
             elif state == "l2":
@@ -169,6 +231,10 @@ def create_app(
                 "health": health, "run_discovered": discovered,
                 "latest_runs": latest_runs, "run_updated": updated,
                 "run_has_more": bool(has_more),
+                "week_start": week_start, "week_end": week_end - timedelta(days=1),
+                "weekly_stats": weekly_stats,
+                "scheduler_enabled": app.state.scheduler_enabled,
+                "scheduler_last_tick": app.state.monitor_scheduler.last_tick,
             })
 
     @app.get("/works/{work_id}", response_class=HTMLResponse)
@@ -247,6 +313,8 @@ def create_app(
         name: str = Form(...),
         subscription_type: str = Form(...),
         feed_mode: str = Form("created"),
+        provider: str = Form("crossref"),
+        interval_hours: int = Form(24),
         issn: str = Form(""),
         query: str = Form(""),
     ):
@@ -254,6 +322,10 @@ def create_app(
             raise HTTPException(422, "目前仅支持期刊或主题订阅")
         if feed_mode not in {"created", "update"}:
             raise HTTPException(422, "feed mode 必须是 created 或 update")
+        if provider not in {"crossref", "pubmed"}:
+            raise HTTPException(422, "目前仅支持 Crossref 或 PubMed")
+        if interval_hours not in {6, 12, 24, 168}:
+            raise HTTPException(422, "检查频率不受支持")
         if subscription_type == "journal" and not issn.strip():
             raise HTTPException(422, "期刊订阅必须填写 ISSN")
         if subscription_type == "topic" and not query.strip():
@@ -264,14 +336,15 @@ def create_app(
             ))).scalar_one_or_none()
             if existing:
                 raise HTTPException(409, "订阅名称已存在")
-            source = (await session.execute(select(Source).where(Source.name == "crossref"))).scalar_one_or_none()
+            source = (await session.execute(select(Source).where(Source.name == provider))).scalar_one_or_none()
             if source is None:
-                source = Source(name="crossref", source_type="api", config={})
+                source = Source(name=provider, source_type="api", config={})
                 session.add(source)
                 await session.flush()
             config = {
                 "lookback_days": 7, "feed_mode": feed_mode, "page_size": 100,
                 "max_items_per_run": 500, "max_pages_per_run": 5,
+                "interval_hours": interval_hours,
             }
             if issn.strip():
                 config["issn"] = issn.strip()
@@ -284,19 +357,47 @@ def create_app(
             await session.commit()
         return RedirectResponse(url="/monitor?notice=subscription-created", status_code=303)
 
+    @app.post("/monitor/subscriptions/{subscription_id}/toggle")
+    async def toggle_subscription(subscription_id: int):
+        async with database.get_session() as session:
+            subscription = await session.get(MonitorSubscription, subscription_id)
+            if subscription is None:
+                raise HTTPException(404, "订阅不存在")
+            subscription.enabled = not subscription.enabled
+            await session.commit()
+        notice = "subscription-enabled" if subscription.enabled else "subscription-paused"
+        return RedirectResponse(url=f"/monitor?notice={notice}", status_code=303)
+
+    @app.post("/monitor/subscriptions/{subscription_id}/frequency")
+    async def update_frequency(subscription_id: int, interval_hours: int = Form(...)):
+        if interval_hours not in {6, 12, 24, 168}:
+            raise HTTPException(422, "检查频率不受支持")
+        async with database.get_session() as session:
+            subscription = await session.get(MonitorSubscription, subscription_id)
+            if subscription is None:
+                raise HTTPException(404, "订阅不存在")
+            subscription.config = {**subscription.config, "interval_hours": interval_hours}
+            await session.commit()
+        return RedirectResponse(url="/monitor?notice=frequency-updated", status_code=303)
+
     @app.post("/monitor/subscriptions/{subscription_id}/run")
     async def run_subscription(subscription_id: int):
-        adapter = make_crossref()
         llm_client = await make_llm()
+        adapter = None
         try:
             async with database.get_session() as session:
                 subscription = await session.get(MonitorSubscription, subscription_id)
                 if subscription is None:
                     raise HTTPException(404, "订阅不存在")
+                source = await session.get(Source, subscription.source_id)
+                if source is None:
+                    raise HTTPException(409, "订阅来源不存在")
+                adapter = make_adapter(source)
                 result = await run_monitor_subscription(session, subscription, adapter, llm_client)
                 await session.commit()
         finally:
-            await adapter.close()
+            if adapter:
+                await adapter.close()
             if llm_client:
                 await llm_client.close()
         if result.error:

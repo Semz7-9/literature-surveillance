@@ -33,7 +33,7 @@ class LLMConfig(BaseModel):
 class MonitorConfig(BaseModel):
     """日常监控配置"""
 
-    enabled: bool = Field(default=False)
+    enabled: bool = Field(default=True)
     check_interval_hours: int = Field(default=24)
     sources: list[str] = Field(default_factory=list, description="监控源：pubmed, xmol, etc.")
 
@@ -92,9 +92,9 @@ def create_default_config(output_path: str | Path = "config.yaml") -> None:
             "model_strong": "gpt-4o",
         },
         "monitor": {
-            "enabled": False,
+            "enabled": True,
             "check_interval_hours": 24,
-            "sources": ["pubmed"],
+            "sources": ["crossref", "pubmed"],
         },
     }
 
