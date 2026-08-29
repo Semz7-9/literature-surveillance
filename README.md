@@ -75,3 +75,13 @@ Claim Status (基于它的断言是否有效)
 ## License
 
 MIT
+
+## UI-0（交互原型）
+
+在已有 SQLite 数据库上启动最小阅读界面：
+
+```bash
+uvicorn src.web.app:app --reload
+```
+
+打开 `http://127.0.0.1:8000` 可浏览 Inbox、查看 L1 证据与 Debug 视图，并执行 Keep、Ignore、Queue L2。默认使用 `config.yaml` 的数据库路径；没有该文件时使用 `data/literature.db`。
