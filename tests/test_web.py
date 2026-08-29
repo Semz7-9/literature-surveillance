@@ -44,7 +44,11 @@ def test_ui0_inbox_detail_and_actions(tmp_path: Path):
 
     asyncio.run(seed())
     with TestClient(app) as client:
-        inbox = client.get("/")
+        dashboard = client.get("/")
+        assert dashboard.status_code == 200
+        assert "学术专题档案" in dashboard.text
+        assert "定期文献更新" in dashboard.text
+        inbox = client.get("/monitor")
         assert inbox.status_code == 200
         assert "A real literature card" in inbox.text
         detail = client.get("/works/1")

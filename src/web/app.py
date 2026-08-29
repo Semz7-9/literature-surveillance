@@ -1,6 +1,7 @@
 """FastAPI application for the deliberately small UI-0 vertical slice."""
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -52,6 +53,24 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
         return {"work": work, "record": preferred, "state": state, "artifact": artifact}
 
     @app.get("/", response_class=HTMLResponse)
+    async def dashboard(request: Request):
+        async with database.get_session() as session:
+            works = (await session.execute(
+                select(Work).where(Work.status == WorkStatus.ACTIVE.value)
+            )).scalars().all()
+            cards = [await work_view(work, session) for work in works]
+            week_start = datetime.utcnow() - timedelta(days=7)
+            stats = {
+                "discovered": sum(work.created_at >= week_start for work in works),
+                "in_scope": len(works),
+                "processed": sum(card["artifact"] is not None for card in cards),
+                "saved": sum(
+                    card["state"] is not None and card["state"].state == "keep" for card in cards
+                ),
+            }
+            return templates.TemplateResponse(request, "dashboard.html", {"stats": stats})
+
+    @app.get("/monitor", response_class=HTMLResponse)
     async def inbox(request: Request, state: str | None = None, notice: str | None = None):
         async with database.get_session() as session:
             stmt = select(Work).where(Work.status == WorkStatus.ACTIVE.value).order_by(Work.updated_at.desc())
@@ -101,6 +120,10 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
         # makes the future product surface visible without inventing one.
         return templates.TemplateResponse(request, "archives.html", {"archives": []})
 
+    @app.get("/archives/structure", response_class=HTMLResponse)
+    async def archive_structure(request: Request):
+        return templates.TemplateResponse(request, "archive_detail.html", {})
+
     @app.post("/works/{work_id}/user-state")
     async def set_user_state(work_id: int, state: str = Form(...)):
         if state not in {"keep", "ignore"}:
@@ -114,7 +137,7 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
             else:
                 session.add(UserWorkState(work_id=work_id, state=state, match_reason={"source": "UI-0"}))
             await session.commit()
-        return RedirectResponse(url=f"/?notice={state}", status_code=303)
+        return RedirectResponse(url=f"/monitor?notice={state}", status_code=303)
 
     @app.post("/works/{work_id}/reading-queue")
     async def queue_l2(work_id: int):
