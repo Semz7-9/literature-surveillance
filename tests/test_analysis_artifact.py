@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import select
 
 from src.core.database import Database
-from src.core.models import Record, AnalysisArtifact
+from src.core.models import Record, AnalysisArtifact, Work
 from src.core.artifact import create_source_snapshot
 from src.workflows.l1_generator import run_l1
 from skills.l1_literature_card.contract import L1Output
@@ -85,7 +85,10 @@ class FakeLLMClient:
 
 async def test_run_l1_is_idempotent_and_does_not_repeat_llm_call(db: Database):
     async with db.get_session() as session:
-        record = make_record("10.1/idem")
+        work = Work(work_id="work-idempotency", title="Some Paper")
+        session.add(work)
+        await session.flush()
+        record = make_record("10.1/idem", work_id=work.id)
         session.add(record)
         await session.flush()
         snapshot = await create_source_snapshot(session, record, "crossref")
@@ -111,7 +114,10 @@ async def test_run_l1_is_idempotent_and_does_not_repeat_llm_call(db: Database):
 
 async def test_run_l1_versions_on_skill_bump(db: Database):
     async with db.get_session() as session:
-        record = make_record("10.1/version")
+        work = Work(work_id="work-version", title="Some Paper")
+        session.add(work)
+        await session.flush()
+        record = make_record("10.1/version", work_id=work.id)
         session.add(record)
         await session.flush()
         snapshot = await create_source_snapshot(session, record, "crossref")

@@ -404,6 +404,10 @@ async def test_confirm_edge_rejects_second_confirmation_for_same_record(db: Data
 
         # 先 reject 旧的，再 confirm 新的才应该成功
         await resolver.reject_edge(edge_a.id)
-        await resolver.confirm_edge(edge_b.id)
+        from src.core.work_identity import IdentifierConflictError
+
+        with pytest.raises(IdentifierConflictError):
+            await resolver.confirm_edge(edge_b.id)
         await session.refresh(r1)
-        assert r1.work_id == other_work.id
+        assert r1.work_id is None
+        assert edge_b.status == IdentityStatus.CANDIDATE.value

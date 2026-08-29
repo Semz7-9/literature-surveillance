@@ -114,6 +114,18 @@ class IdentityStatus(str, Enum):
     REJECTED = "REJECTED"  # 明确不是同一个 Work
 
 
+class WorkStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    MERGED = "MERGED"
+
+
+class PendingRelationStatus(str, Enum):
+    PENDING = "PENDING"
+    RESOLVED = "RESOLVED"
+    CONFLICT = "CONFLICT"
+    DISMISSED = "DISMISSED"
+
+
 # ============================================================================
 # Core Entities
 # ============================================================================
@@ -138,6 +150,12 @@ class Work(Base):
     # 核心元数据
     title: Mapped[str] = mapped_column(Text)
     canonical_doi: Mapped[Optional[str]] = mapped_column(String(255), index=True)
+    # Canonical metadata is a projection of these records, never a permanent
+    # copy of whichever record happened to be imported first.
+    preferred_record_id: Mapped[Optional[int]] = mapped_column(ForeignKey("records.id"))
+    first_public_record_id: Mapped[Optional[int]] = mapped_column(ForeignKey("records.id"))
+    status: Mapped[str] = mapped_column(String(16), default=WorkStatus.ACTIVE.value, index=True)
+    merged_into_work_id: Mapped[Optional[int]] = mapped_column(ForeignKey("works.id"))
 
     # 时间
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -146,7 +164,9 @@ class Work(Base):
     )
 
     # 关系
-    records: Mapped[list["Record"]] = relationship(back_populates="work")
+    records: Mapped[list["Record"]] = relationship(
+        back_populates="work", foreign_keys="Record.work_id"
+    )
     identifiers: Mapped[list["WorkIdentifier"]] = relationship(back_populates="work")
 
 
@@ -195,7 +215,7 @@ class Record(Base):
     )
 
     # 关系
-    work: Mapped["Work"] = relationship(back_populates="records")
+    work: Mapped["Work"] = relationship(back_populates="records", foreign_keys=[work_id])
 
     __table_args__ = (Index("ix_records_publication_date", "publication_date"),)
 
@@ -302,6 +322,47 @@ class SourceSnapshot(Base):
     source_name: Mapped[str] = mapped_column(String(64))  # "crossref", "pubmed", etc.
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PendingIdentifierRelation(Base):
+    """An explicit source relation whose target identifier is not yet usable."""
+
+    __tablename__ = "pending_identifier_relations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_record_id: Mapped[int] = mapped_column(ForeignKey("records.id"), index=True)
+    target_identifier_type: Mapped[str] = mapped_column(String(32), index=True)
+    target_identifier_value: Mapped[str] = mapped_column(String(255), index=True)
+    relation_type: Mapped[str] = mapped_column(String(64))
+    evidence_source: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(
+        String(16), default=PendingRelationStatus.PENDING.value, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_record_id",
+            "target_identifier_type",
+            "target_identifier_value",
+            "relation_type",
+            name="uq_pending_identifier_relation",
+        ),
+    )
+
+
+class WorkMergeAudit(Base):
+    """Immutable provenance for a conservative Work merge."""
+
+    __tablename__ = "work_merge_audits"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    merged_from_work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), index=True)
+    merged_into_work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
