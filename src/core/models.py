@@ -628,6 +628,15 @@ class MonitorRun(Base):
     status: Mapped[str] = mapped_column(String(32), default="RUNNING", index=True)
     error: Mapped[Optional[str]] = mapped_column(Text)
 
+    __table_args__ = (
+        Index(
+            "uq_monitor_runs_one_running_per_subscription",
+            "subscription_id",
+            unique=True,
+            sqlite_where=text("status = 'RUNNING'"),
+        ),
+    )
+
 
 class SourceHealth(Base):
     """
@@ -640,7 +649,7 @@ class SourceHealth(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), index=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), unique=True)
 
     last_success: Mapped[Optional[datetime]] = mapped_column(DateTime)
     last_failure: Mapped[Optional[datetime]] = mapped_column(DateTime)

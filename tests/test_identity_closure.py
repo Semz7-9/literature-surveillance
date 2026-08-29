@@ -8,8 +8,9 @@ from sqlalchemy import select
 
 from src.core.database import Database
 from src.core.models import (
-    IdentityEdge, IdentityStatus, PendingIdentifierRelation, PendingRelationStatus,
-    Record, Work, WorkIdentifier, WorkMergeAudit, WorkStatus,
+    DiscoveryEvent, IdentityEdge, IdentityStatus, MonitorSubscription,
+    PendingIdentifierRelation, PendingRelationStatus, ReadingQueue, Record, Source,
+    UserWorkState, Work, WorkIdentifier, WorkMergeAudit, WorkStatus,
 )
 from src.core.work_identity import IdentifierConflictError, WorkIdentityResolver
 
@@ -119,3 +120,50 @@ async def test_merge_preserves_audit_and_tombstones_old_work(db: Database):
         assert work_merge.preferred_record_id is None
         assert work_merge.first_public_record_id is None
         assert work_merge.canonical_doi is None
+
+
+async def test_merge_rehomes_monitor_and_user_dependents(db: Database):
+    async with db.get_session() as session:
+        resolver = WorkIdentityResolver(session)
+        keep = Work(work_id="W-keep-state", title="Keep")
+        merge = Work(work_id="W-merge-state", title="Merge")
+        source = Source(name="crossref", source_type="api", config={})
+        session.add_all([keep, merge, source])
+        await session.flush()
+        keep_record = record("10.1/keep-state", "Keep")
+        merge_record = record("10.1/merge-state", "Merge")
+        keep_record.work_id, merge_record.work_id = keep.id, merge.id
+        session.add_all([keep_record, merge_record])
+        subscription = MonitorSubscription(
+            name="Merge monitor", subscription_type="journal", source_id=source.id,
+            config={"issn": "1234-5678"},
+        )
+        session.add(subscription)
+        await session.flush()
+        event = DiscoveryEvent(
+            source_id=source.id, subscription_id=subscription.id,
+            external_identifier="10.1/merge-state", work_id=merge.id,
+            raw_metadata={}, status="INGESTED",
+        )
+        session.add_all([
+            event,
+            UserWorkState(work_id=keep.id, state="keep", tags=["a"], match_reason={}),
+            UserWorkState(work_id=merge.id, state="ignore", tags=["b"], match_reason={}),
+            ReadingQueue(work_id=keep.id, requested_level="L2", status="pending", priority=1),
+            ReadingQueue(work_id=merge.id, requested_level="L2", status="pending", priority=5),
+        ])
+        await session.flush()
+
+        await resolver.merge_work(
+            keep, merge, reason="manual identity confirmation", evidence={}, confirmed=True
+        )
+        assert event.work_id == keep.id
+        states = (await session.execute(select(UserWorkState))).scalars().all()
+        assert len(states) == 1
+        assert states[0].work_id == keep.id
+        assert states[0].state == "conflict"
+        assert states[0].match_reason["states"] == ["keep", "ignore"]
+        queues = (await session.execute(select(ReadingQueue))).scalars().all()
+        assert len(queues) == 1
+        assert queues[0].work_id == keep.id
+        assert queues[0].priority == 5

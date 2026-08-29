@@ -86,6 +86,17 @@ async def run_l1(
     snapshot: SourceSnapshot,
     llm_client: LLMClient,
 ) -> AnalysisArtifact:
+    """Backward-compatible L1 entry point returning only the artifact."""
+    artifact, _ = await run_l1_with_status(session, record, snapshot, llm_client)
+    return artifact
+
+
+async def run_l1_with_status(
+    session: AsyncSession,
+    record: Record,
+    snapshot: SourceSnapshot,
+    llm_client: LLMClient,
+) -> tuple[AnalysisArtifact, bool]:
     """
     Single entry point for L1 generation + persistence.
 
@@ -112,7 +123,7 @@ async def run_l1(
 
     existing = await _find_existing_l1_artifact(session, record, snapshot)
     if existing:
-        return existing
+        return existing, False
 
     work = await session.get(Work, record.work_id)
     if work is None:
@@ -131,7 +142,7 @@ async def run_l1(
         snapshot_id=snapshot.id,
     )
     output = await generate_l1_card(input_data, llm_client)
-    return await _persist_l1_artifact(session, record, snapshot, output)
+    return await _persist_l1_artifact(session, record, snapshot, output), True
 
 
 async def _find_existing_l1_artifact(

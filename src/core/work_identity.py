@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
     IdentityEdge, IdentityEvidenceType, IdentityStatus, PendingIdentifierRelation,
-    PendingRelationStatus, Record, Work, WorkIdentifier, WorkMergeAudit,
-    WorkStatus, normalize_doi,
+    DiscoveryEvent, PendingRelationStatus, ReadingQueue, Record, UserWorkState,
+    Work, WorkIdentifier, WorkMergeAudit, WorkStatus, normalize_doi,
 )
 
 INTRA_WORK_RELATIONS = {"is-preprint-of", "has-preprint", "is-version-of", "has-version"}
@@ -199,6 +199,7 @@ class WorkIdentityResolver:
         edges = (await self.session.execute(select(IdentityEdge).where(IdentityEdge.target_work_id == merge.id))).scalars().all()
         for edge in edges:
             edge.target_work_id = keep.id
+        await self._rehome_work_dependents(keep, merge)
         merge.status, merge.merged_into_work_id = WorkStatus.MERGED.value, keep.id
         self.session.add(WorkMergeAudit(merged_from_work_id=merge.id, merged_into_work_id=keep.id, reason=reason, evidence=evidence))
         await self.session.flush()
@@ -206,6 +207,60 @@ class WorkIdentityResolver:
         await self.recompute_work_projection(merge)
         await self._reconcile_identity_state_after_merge(keep)
         return keep
+
+    async def _rehome_work_dependents(self, keep: Work, merge: Work) -> None:
+        """Move Monitor and user-owned state away from a Work tombstone."""
+        events = (await self.session.execute(select(DiscoveryEvent).where(
+            DiscoveryEvent.work_id == merge.id
+        ))).scalars().all()
+        for event in events:
+            event.work_id = keep.id
+
+        keep_state = (await self.session.execute(select(UserWorkState).where(
+            UserWorkState.work_id == keep.id
+        ))).scalar_one_or_none()
+        merge_state = (await self.session.execute(select(UserWorkState).where(
+            UserWorkState.work_id == merge.id
+        ))).scalar_one_or_none()
+        if merge_state and keep_state is None:
+            merge_state.work_id = keep.id
+        elif merge_state and keep_state:
+            keep_state.tags = sorted(set((keep_state.tags or []) + (merge_state.tags or [])))
+            if keep_state.state != merge_state.state:
+                conflicting_states = [keep_state.state, merge_state.state]
+                keep_state.state = "conflict"
+                keep_state.match_reason = {
+                    "reason": "work_merge_state_conflict",
+                    "states": conflicting_states,
+                    "merged_from_work_id": merge.id,
+                }
+            else:
+                keep_state.match_reason = {
+                    "reason": "work_merge_state_combined",
+                    "sources": [keep_state.match_reason, merge_state.match_reason],
+                }
+            await self.session.delete(merge_state)
+
+        queues = (await self.session.execute(select(ReadingQueue).where(
+            ReadingQueue.work_id == merge.id
+        ))).scalars().all()
+        for queue in queues:
+            duplicate = (await self.session.execute(select(ReadingQueue).where(
+                ReadingQueue.work_id == keep.id,
+                ReadingQueue.requested_level == queue.requested_level,
+                ReadingQueue.status == queue.status,
+            ))).scalars().first()
+            if duplicate:
+                duplicate.priority = max(duplicate.priority, queue.priority)
+                duplicate.requested_at = min(duplicate.requested_at, queue.requested_at)
+                if queue.completed_at and (
+                    duplicate.completed_at is None or queue.completed_at > duplicate.completed_at
+                ):
+                    duplicate.completed_at = queue.completed_at
+                await self.session.delete(queue)
+            else:
+                queue.work_id = keep.id
+        await self.session.flush()
 
     async def _reconcile_identity_state_after_merge(self, keep: Work) -> None:
         """Close conflict artefacts made redundant by a confirmed Work merge."""

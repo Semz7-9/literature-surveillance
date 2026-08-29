@@ -1,11 +1,12 @@
 """Monitor MVP regression tests with a deterministic fake discovery adapter."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from src.core.database import Database
 from src.core.models import (
@@ -314,3 +315,91 @@ async def test_unresolved_identity_recovers_when_relation_arrives(db: Database):
         await run_monitor_subscription(session, subscription, adapter)
         assert monitored.work_id == target_work.id
         assert event.work_id == target_work.id
+
+
+class TitleUpdatingAdapter(FakeCrossrefDiscovery):
+    async def discover_works(self, **kwargs):
+        items, token = await super().discover_works(**kwargs)
+        if len(self.calls) > 1:
+            items[0]["title"] = ["A corrected monitored KRAS paper title"]
+        return items, token
+
+
+async def test_cached_l1_is_not_counted_as_new_generation(db: Database):
+    async with db.get_session() as session:
+        source = Source(name="crossref", source_type="api", config={})
+        session.add(source)
+        await session.flush()
+        subscription = MonitorSubscription(
+            name="L1 stats", subscription_type="journal", source_id=source.id,
+            config={"issn": "1234-5678"},
+        )
+        session.add(subscription)
+        await session.flush()
+        adapter, llm = TitleUpdatingAdapter(), FakeLLM()
+        first = await run_monitor_subscription(session, subscription, adapter, llm)
+        second = await run_monitor_subscription(session, subscription, adapter, llm)
+        assert first.l1_generated == 1
+        assert second.updated == 1
+        assert second.l1_generated == 0
+        assert llm.calls == 1
+
+
+async def test_active_subscription_run_lock_skips_reentry(db: Database):
+    async with db.get_session() as session:
+        source = Source(name="crossref", source_type="api", config={})
+        session.add(source)
+        await session.flush()
+        subscription = MonitorSubscription(
+            name="Locked", subscription_type="journal", source_id=source.id,
+            config={"issn": "1234-5678"},
+        )
+        session.add(subscription)
+        await session.flush()
+        now = datetime(2026, 8, 29, 12)
+        session.add(MonitorRun(
+            subscription_id=subscription.id, started_at=now, status="RUNNING"
+        ))
+        await session.flush()
+        adapter = FakeCrossrefDiscovery()
+        result = await run_monitor_subscription(session, subscription, adapter, now=now)
+        assert result.skipped is True
+        assert adapter.calls == []
+
+
+async def test_stale_subscription_run_lock_is_recovered(db: Database):
+    async with db.get_session() as session:
+        source = Source(name="crossref", source_type="api", config={})
+        session.add(source)
+        await session.flush()
+        subscription = MonitorSubscription(
+            name="Stale", subscription_type="journal", source_id=source.id,
+            config={"issn": "1234-5678", "run_lock_timeout_minutes": 30},
+        )
+        session.add(subscription)
+        await session.flush()
+        now = datetime(2026, 8, 29, 12)
+        stale = MonitorRun(
+            subscription_id=subscription.id,
+            started_at=now - timedelta(minutes=31), status="RUNNING",
+        )
+        session.add(stale)
+        await session.flush()
+        result = await run_monitor_subscription(
+            session, subscription, FakeCrossrefDiscovery(), now=now
+        )
+        assert result.skipped is False
+        assert stale.status == "ABANDONED"
+        runs = (await session.execute(select(MonitorRun).order_by(MonitorRun.id))).scalars().all()
+        assert runs[-1].status == "COMPLETED"
+
+
+async def test_source_health_is_one_to_one_at_database_level(db: Database):
+    async with db.get_session() as session:
+        source = Source(name="crossref", source_type="api", config={})
+        session.add(source)
+        await session.flush()
+        session.add_all([SourceHealth(source_id=source.id), SourceHealth(source_id=source.id)])
+        with pytest.raises(IntegrityError):
+            await session.flush()
+        await session.rollback()

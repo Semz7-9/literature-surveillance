@@ -59,6 +59,15 @@ class Database:
                 await conn.execute(
                     text("ALTER TABLE discovery_events ADD COLUMN last_metadata_hash VARCHAR(64)")
                 )
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_source_health_source_id "
+                "ON source_health(source_id)"
+            ))
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_monitor_runs_one_running_per_subscription "
+                "ON monitor_runs(subscription_id) WHERE status = 'RUNNING'"
+            ))
 
     async def close(self):
         """关闭数据库连接"""

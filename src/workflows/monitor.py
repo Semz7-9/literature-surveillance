@@ -18,7 +18,7 @@ from ..core.models import (
 )
 from ..core.work_identity import WorkIdentityResolver
 from ..llm.client import LLMClient
-from .l1_generator import run_l1
+from .l1_generator import run_l1_with_status
 
 
 @dataclass
@@ -32,6 +32,7 @@ class MonitorRunResult:
     processed: int = 0
     pages: int = 0
     has_more: bool = False
+    skipped: bool = False
     error: str | None = None
 
 
@@ -131,9 +132,10 @@ async def _process_event(
             "INGESTED" if snapshot.analysis_text else "L0_READY"
         )
         if llm_client and snapshot.analysis_text and record.work_id:
-            await run_l1(session, record, snapshot, llm_client)
+            _, created_new = await run_l1_with_status(session, record, snapshot, llm_client)
             event.status = "L1_READY"
-            result.l1_generated += 1
+            if created_new:
+                result.l1_generated += 1
         if "processing_error" in event.raw_metadata:
             event.raw_metadata = {
                 key: value for key, value in event.raw_metadata.items()
@@ -160,6 +162,21 @@ async def run_monitor_subscription(
     source = await session.get(Source, subscription.source_id)
     if source is None:
         raise ValueError(f"Subscription {subscription.id} references a missing Source")
+    running = (await session.execute(select(MonitorRun).where(
+        MonitorRun.subscription_id == subscription.id,
+        MonitorRun.status == "RUNNING",
+    ).order_by(MonitorRun.started_at.desc()))).scalars().first()
+    if running:
+        lock_timeout = timedelta(
+            minutes=int(subscription.config.get("run_lock_timeout_minutes", 30))
+        )
+        if running.started_at >= now - lock_timeout:
+            result.skipped = True
+            return result
+        running.status = "ABANDONED"
+        running.finished_at = now
+        running.error = "stale subscription run lock recovered"
+        await session.flush()
     cursor = (await session.execute(select(SourceCursor).where(
         SourceCursor.subscription_id == subscription.id
     ))).scalar_one_or_none()
@@ -191,7 +208,7 @@ async def run_monitor_subscription(
         adapter_cursor = "*"
 
     monitor_run = MonitorRun(
-        subscription_id=subscription.id, started_at=datetime.utcnow(),
+        subscription_id=subscription.id, started_at=now,
         window_from=start, window_until=until, cursor_start=adapter_cursor,
     )
     session.add(monitor_run)

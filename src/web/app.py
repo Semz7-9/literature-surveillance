@@ -223,6 +223,7 @@ def create_app(
             user_state = (await session.execute(select(UserWorkState).where(UserWorkState.work_id == work_id))).scalar_one_or_none()
             if user_state:
                 user_state.state = state
+                user_state.match_reason = {"source": "user_resolution"}
             else:
                 session.add(UserWorkState(work_id=work_id, state=state, match_reason={"source": "UI-0"}))
             await session.commit()
@@ -300,6 +301,8 @@ def create_app(
                 await llm_client.close()
         if result.error:
             return RedirectResponse(url="/monitor?notice=check-failed", status_code=303)
+        if result.skipped:
+            return RedirectResponse(url="/monitor?notice=already-running", status_code=303)
         return RedirectResponse(url=(
             f"/monitor?notice=checked&discovered={result.discovered}"
             f"&updated={result.updated}&has_more={int(result.has_more)}"
