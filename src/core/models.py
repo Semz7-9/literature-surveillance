@@ -17,6 +17,7 @@ from sqlalchemy import (
     Float,
     DateTime,
     Text,
+    Boolean,
     ForeignKey,
     JSON,
     Index,
@@ -541,6 +542,63 @@ class Source(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class MonitorSubscription(Base):
+    """A user's durable instruction describing what should be monitored."""
+
+    __tablename__ = "monitor_subscriptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    subscription_type: Mapped[str] = mapped_column(String(32))  # journal, topic, preprint
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), index=True)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class SourceCursor(Base):
+    """Incremental progress for one monitor subscription."""
+
+    __tablename__ = "source_cursors"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("monitor_subscriptions.id"), unique=True, index=True
+    )
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    cursor_value: Mapped[Optional[str]] = mapped_column(Text)
+    last_seen_identifier: Mapped[Optional[str]] = mapped_column(String(255))
+    last_success_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    state: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class DiscoveryEvent(Base):
+    """Provenance for why a Work appeared in the monitor inbox."""
+
+    __tablename__ = "discovery_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), index=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("monitor_subscriptions.id"), index=True
+    )
+    external_identifier: Mapped[str] = mapped_column(String(255), index=True)
+    work_id: Mapped[Optional[int]] = mapped_column(ForeignKey("works.id"), index=True)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    source_url: Mapped[Optional[str]] = mapped_column(Text)
+    raw_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="DISCOVERED", index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "subscription_id", "external_identifier", name="uq_discovery_subscription_identifier"
+        ),
     )
 
 

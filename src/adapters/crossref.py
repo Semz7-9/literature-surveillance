@@ -103,6 +103,37 @@ class CrossrefAdapter:
         work = await self.get_work_by_doi(doi)
         return work.get("relation", {})
 
+    async def discover_works(
+        self,
+        *,
+        from_date: str,
+        until_date: str,
+        issn: str | None = None,
+        query: str | None = None,
+        cursor: str = "*",
+        rows: int = 100,
+    ) -> tuple[list[dict], str | None]:
+        """Discover a deterministic page of recently updated Crossref works."""
+        if not issn and not query:
+            raise ValueError("Crossref discovery requires an ISSN or a query")
+        await self._wait_for_rate_limit()
+        filters = [f"from-update-date:{from_date}", f"until-update-date:{until_date}"]
+        if issn:
+            filters.append(f"issn:{issn.strip()}")
+        params = {
+            "filter": ",".join(filters),
+            "cursor": cursor,
+            "rows": min(rows, 1000),
+            "sort": "updated",
+            "order": "asc",
+        }
+        if query:
+            params["query.bibliographic"] = query.strip()
+        response = await self._client.get(f"{self.BASE_URL}/works", params=params)
+        response.raise_for_status()
+        message = response.json()["message"]
+        return message.get("items", []), message.get("next-cursor")
+
     async def close(self):
         """关闭 HTTP client"""
         await self._client.aclose()

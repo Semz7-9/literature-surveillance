@@ -5,7 +5,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from src.core.models import AnalysisArtifact, Record, SourceSnapshot, Work
+from src.core.models import (
+    AnalysisArtifact, DiscoveryEvent, MonitorSubscription, Record, Source,
+    SourceSnapshot, Work,
+)
 from src.web.app import create_app
 
 
@@ -16,6 +19,15 @@ def test_ui0_inbox_detail_and_actions(tmp_path: Path):
     async def seed():
         await app.state.database.init_db()
         async with app.state.database.get_session() as session:
+            source = Source(name="crossref", source_type="api", config={})
+            session.add(source)
+            await session.flush()
+            subscription = MonitorSubscription(
+                name="Test Monitor", subscription_type="journal", source_id=source.id,
+                config={"issn": "1234-5678"},
+            )
+            session.add(subscription)
+            await session.flush()
             work = Work(work_id="W-ui-test", title="A real literature card")
             session.add(work)
             await session.flush()
@@ -39,6 +51,11 @@ def test_ui0_inbox_detail_and_actions(tmp_path: Path):
                     "author_reported_result": "It works.",
                     "evidence_spans": {"research_object": "A useful abstract."},
                 },
+            ))
+            session.add(DiscoveryEvent(
+                source_id=source.id, subscription_id=subscription.id,
+                external_identifier="10.1/ui", work_id=work.id,
+                source_url="https://doi.org/10.1/ui", raw_metadata={}, status="L1_READY",
             ))
             await session.commit()
 

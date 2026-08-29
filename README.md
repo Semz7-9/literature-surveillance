@@ -85,3 +85,5 @@ uvicorn src.web.app:app --reload
 ```
 
 打开 `http://127.0.0.1:8000` 可浏览 Inbox、查看 L1 证据与 Debug 视图，并执行 Keep、Ignore、Queue L2。默认使用 `config.yaml` 的数据库路径；没有该文件时使用 `data/literature.db`。
+
+进入“文献更新”后，可创建 Crossref 期刊订阅（ISSN）或主题订阅（检索式），再点击“立即检查”。系统会把新发现依次送入现有的 DOI 规范化、Work identity、Snapshot 和 L1 流程；没有配置 LLM API key 时仍会完成发现和 L0 入库，但不会生成新的 L1 卡片。
