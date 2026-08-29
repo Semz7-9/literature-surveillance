@@ -591,6 +591,8 @@ class DiscoveryEvent(Base):
     external_identifier: Mapped[str] = mapped_column(String(255), index=True)
     work_id: Mapped[Optional[int]] = mapped_column(ForeignKey("works.id"), index=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    last_metadata_hash: Mapped[Optional[str]] = mapped_column(String(64))
     source_url: Mapped[Optional[str]] = mapped_column(Text)
     raw_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(32), default="DISCOVERED", index=True)
@@ -600,6 +602,31 @@ class DiscoveryEvent(Base):
             "subscription_id", "external_identifier", name="uq_discovery_subscription_identifier"
         ),
     )
+
+
+class MonitorRun(Base):
+    """Immutable operational history for one subscription execution."""
+
+    __tablename__ = "monitor_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("monitor_subscriptions.id"), index=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    window_from: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    window_until: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    cursor_start: Mapped[Optional[str]] = mapped_column(Text)
+    cursor_end: Mapped[Optional[str]] = mapped_column(Text)
+    discovered: Mapped[int] = mapped_column(Integer, default=0)
+    created: Mapped[int] = mapped_column(Integer, default=0)
+    updated: Mapped[int] = mapped_column(Integer, default=0)
+    l1_generated: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    has_more: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(32), default="RUNNING", index=True)
+    error: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class SourceHealth(Base):

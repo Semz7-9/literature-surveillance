@@ -110,6 +110,7 @@ class CrossrefAdapter:
         until_date: str,
         issn: str | None = None,
         query: str | None = None,
+        feed_mode: str = "created",
         cursor: str = "*",
         rows: int = 100,
     ) -> tuple[list[dict], str | None]:
@@ -117,7 +118,10 @@ class CrossrefAdapter:
         if not issn and not query:
             raise ValueError("Crossref discovery requires an ISSN or a query")
         await self._wait_for_rate_limit()
-        filters = [f"from-update-date:{from_date}", f"until-update-date:{until_date}"]
+        if feed_mode not in {"created", "update"}:
+            raise ValueError("feed_mode must be created or update")
+        date_filter = "created-date" if feed_mode == "created" else "update-date"
+        filters = [f"from-{date_filter}:{from_date}", f"until-{date_filter}:{until_date}"]
         if issn:
             filters.append(f"issn:{issn.strip()}")
         params = {

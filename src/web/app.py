@@ -14,7 +14,7 @@ from sqlalchemy import select
 from ..core.config import load_config
 from ..core.database import Database
 from ..core.models import (
-    AnalysisArtifact, DiscoveryEvent, IdentityEdge, MonitorSubscription,
+    AnalysisArtifact, DiscoveryEvent, IdentityEdge, MonitorRun, MonitorSubscription,
     PendingIdentifierRelation, ReadingQueue, Record, Source, SourceCursor,
     SourceHealth, UserWorkState, Work, WorkIdentifier, WorkMergeAudit, WorkStatus,
 )
@@ -124,6 +124,8 @@ def create_app(
         period: str = "week",
         subscription_id: int | None = None,
         discovered: int | None = None,
+        updated: int | None = None,
+        has_more: int | None = None,
     ):
         async with database.get_session() as session:
             event_stmt = select(DiscoveryEvent).where(DiscoveryEvent.work_id.is_not(None))
@@ -155,11 +157,18 @@ def create_app(
             )).scalars().all()
             sources = {source.id: source for source in (await session.execute(select(Source))).scalars().all()}
             health = {item.source_id: item for item in (await session.execute(select(SourceHealth))).scalars().all()}
+            latest_runs = {}
+            for run in (await session.execute(
+                select(MonitorRun).order_by(MonitorRun.started_at.desc())
+            )).scalars().all():
+                latest_runs.setdefault(run.subscription_id, run)
             return templates.TemplateResponse(request, "inbox.html", {
                 "cards": cards, "selected_state": state, "notice": notice,
                 "period": period, "selected_subscription": subscription_id,
                 "subscriptions": subscriptions, "sources": sources,
                 "health": health, "run_discovered": discovered,
+                "latest_runs": latest_runs, "run_updated": updated,
+                "run_has_more": bool(has_more),
             })
 
     @app.get("/works/{work_id}", response_class=HTMLResponse)
@@ -236,11 +245,14 @@ def create_app(
     async def create_subscription(
         name: str = Form(...),
         subscription_type: str = Form(...),
+        feed_mode: str = Form("created"),
         issn: str = Form(""),
         query: str = Form(""),
     ):
         if subscription_type not in {"journal", "topic"}:
             raise HTTPException(422, "目前仅支持期刊或主题订阅")
+        if feed_mode not in {"created", "update"}:
+            raise HTTPException(422, "feed mode 必须是 created 或 update")
         if subscription_type == "journal" and not issn.strip():
             raise HTTPException(422, "期刊订阅必须填写 ISSN")
         if subscription_type == "topic" and not query.strip():
@@ -256,7 +268,10 @@ def create_app(
                 source = Source(name="crossref", source_type="api", config={})
                 session.add(source)
                 await session.flush()
-            config = {"lookback_days": 7, "max_results": 100}
+            config = {
+                "lookback_days": 7, "feed_mode": feed_mode, "page_size": 100,
+                "max_items_per_run": 500, "max_pages_per_run": 5,
+            }
             if issn.strip():
                 config["issn"] = issn.strip()
             if query.strip():
@@ -285,9 +300,10 @@ def create_app(
                 await llm_client.close()
         if result.error:
             return RedirectResponse(url="/monitor?notice=check-failed", status_code=303)
-        return RedirectResponse(
-            url=f"/monitor?notice=checked&discovered={result.discovered}", status_code=303
-        )
+        return RedirectResponse(url=(
+            f"/monitor?notice=checked&discovered={result.discovered}"
+            f"&updated={result.updated}&has_more={int(result.has_more)}"
+        ), status_code=303)
 
     @app.get("/api/inbox")
     async def api_inbox():

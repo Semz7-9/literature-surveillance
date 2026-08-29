@@ -45,6 +45,20 @@ class Database:
 
             # 创建所有表
             await conn.run_sync(Base.metadata.create_all)
+            # UI-0/Monitor MVP 使用 create_all 管理本地 Phase-1 数据库。
+            # create_all 不会给已有表补列，因此为纯 additive 变更提供一个
+            # 极小兼容层；正式迁移体系仍留给后续 Alembic 阶段。
+            columns = {
+                row[1] for row in (
+                    await conn.execute(text("PRAGMA table_info(discovery_events)"))
+                ).fetchall()
+            }
+            if columns and "last_seen_at" not in columns:
+                await conn.execute(text("ALTER TABLE discovery_events ADD COLUMN last_seen_at DATETIME"))
+            if columns and "last_metadata_hash" not in columns:
+                await conn.execute(
+                    text("ALTER TABLE discovery_events ADD COLUMN last_metadata_hash VARCHAR(64)")
+                )
 
     async def close(self):
         """关闭数据库连接"""

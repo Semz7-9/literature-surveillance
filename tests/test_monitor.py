@@ -4,12 +4,13 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import httpx
 from sqlalchemy import select
 
 from src.core.database import Database
 from src.core.models import (
-    AnalysisArtifact, DiscoveryEvent, MonitorSubscription, Record, Source,
-    SourceCursor, SourceHealth, Work,
+    AnalysisArtifact, DiscoveryEvent, MonitorRun, MonitorSubscription, Record,
+    Source, SourceCursor, SourceHealth, SourceSnapshot, Work, WorkIdentifier,
 )
 from src.workflows.monitor import run_monitor_subscription
 from skills.l1_literature_card.contract import L1Output
@@ -93,6 +94,7 @@ async def test_subscription_discovers_processes_and_deduplicates(db: Database):
         assert cursor.last_seen_identifier == "10.1000/monitor"
         health = (await session.execute(select(SourceHealth))).scalar_one()
         assert health.status == "healthy"
+        assert (await session.execute(select(MonitorRun))).scalars().first().status == "COMPLETED"
 
         second = await run_monitor_subscription(session, subscription, adapter, llm, now=now)
         assert second.discovered == 0
@@ -120,9 +122,35 @@ async def test_fetch_failure_updates_source_health_without_advancing_success(db:
         result = await run_monitor_subscription(session, subscription, FailingAdapter())
         assert result.error == "Crossref unavailable"
         health = (await session.execute(select(SourceHealth))).scalar_one()
-        assert health.status == "degraded"
+        # A subscription/query failure is not evidence that Crossref is down.
+        assert health.status == "unknown"
         cursor = (await session.execute(select(SourceCursor))).scalar_one()
         assert cursor.last_success_at is None
+        run = (await session.execute(select(MonitorRun))).scalar_one()
+        assert run.status == "FAILED"
+        assert run.error == "Crossref unavailable"
+
+
+class ProviderFailureAdapter:
+    async def discover_works(self, **kwargs):
+        request = httpx.Request("GET", "https://api.crossref.org/works")
+        raise httpx.ConnectError("network down", request=request)
+
+
+async def test_provider_failure_degrades_source_health(db: Database):
+    async with db.get_session() as session:
+        source = Source(name="crossref", source_type="api", config={})
+        session.add(source)
+        await session.flush()
+        subscription = MonitorSubscription(
+            name="Network", subscription_type="topic", source_id=source.id,
+            config={"query": "chemistry"},
+        )
+        session.add(subscription)
+        await session.flush()
+        await run_monitor_subscription(session, subscription, ProviderFailureAdapter())
+        health = (await session.execute(select(SourceHealth))).scalar_one()
+        assert health.status == "degraded"
 
 
 class PagingAdapter(FakeCrossrefDiscovery):
@@ -141,7 +169,7 @@ async def test_crossref_cursor_resumes_same_window_before_advancing(db: Database
         await session.flush()
         subscription = MonitorSubscription(
             name="Paged", subscription_type="journal", source_id=source.id,
-            config={"issn": "1234-5678", "max_results": 1},
+            config={"issn": "1234-5678", "page_size": 1, "max_pages_per_run": 1},
         )
         session.add(subscription)
         await session.flush()
@@ -155,3 +183,134 @@ async def test_crossref_cursor_resumes_same_window_before_advancing(db: Database
         assert adapter.calls[-1]["cursor"] == "next-page-token"
         assert cursor.cursor_value is None
         assert cursor.last_success_at == now
+        runs = (await session.execute(select(MonitorRun).order_by(MonitorRun.id))).scalars().all()
+        assert [run.status for run in runs] == ["PARTIAL", "COMPLETED"]
+
+
+async def test_ingested_without_llm_is_completed_after_llm_is_configured(db: Database):
+    async with db.get_session() as session:
+        source = Source(name="crossref", source_type="api", config={})
+        session.add(source)
+        await session.flush()
+        subscription = MonitorSubscription(
+            name="Late LLM", subscription_type="journal", source_id=source.id,
+            config={"issn": "1234-5678"},
+        )
+        session.add(subscription)
+        await session.flush()
+        adapter = FakeCrossrefDiscovery()
+        await run_monitor_subscription(session, subscription, adapter, llm_client=None)
+        event = (await session.execute(select(DiscoveryEvent))).scalar_one()
+        assert event.status == "INGESTED"
+        assert (await session.execute(select(AnalysisArtifact))).scalar_one_or_none() is None
+        llm = FakeLLM()
+        await run_monitor_subscription(session, subscription, adapter, llm_client=llm)
+        assert event.status == "L1_READY"
+        assert llm.calls == 1
+
+
+class FlakyLLM(FakeLLM):
+    async def call_with_schema(self, prompt, schema, system_prompt=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("temporary LLM failure")
+        return await FakeLLM.call_with_schema(self, prompt, schema, system_prompt)
+
+
+async def test_failed_processing_is_retryable(db: Database):
+    async with db.get_session() as session:
+        source = Source(name="crossref", source_type="api", config={})
+        session.add(source)
+        await session.flush()
+        subscription = MonitorSubscription(
+            name="Retry", subscription_type="journal", source_id=source.id,
+            config={"issn": "1234-5678"},
+        )
+        session.add(subscription)
+        await session.flush()
+        adapter, llm = FakeCrossrefDiscovery(), FlakyLLM()
+        await run_monitor_subscription(session, subscription, adapter, llm)
+        event = (await session.execute(select(DiscoveryEvent))).scalar_one()
+        assert event.status == "FAILED"
+        await run_monitor_subscription(session, subscription, adapter, llm)
+        assert event.status == "L1_READY"
+
+
+class EnrichmentAdapter(FakeCrossrefDiscovery):
+    async def discover_works(self, **kwargs):
+        items, token = await super().discover_works(**kwargs)
+        if len(self.calls) == 1:
+            items[0].pop("abstract")
+        return items, token
+
+
+async def test_metadata_change_hydrates_e0_to_e1_and_regenerates_snapshot(db: Database):
+    async with db.get_session() as session:
+        source = Source(name="crossref", source_type="api", config={})
+        session.add(source)
+        await session.flush()
+        subscription = MonitorSubscription(
+            name="Enrichment", subscription_type="journal", source_id=source.id,
+            config={"issn": "1234-5678"},
+        )
+        session.add(subscription)
+        await session.flush()
+        adapter = EnrichmentAdapter()
+        await run_monitor_subscription(session, subscription, adapter)
+        event = (await session.execute(select(DiscoveryEvent))).scalar_one()
+        record = (await session.execute(select(Record))).scalar_one()
+        first_hash = event.last_metadata_hash
+        assert event.status == "L0_READY"
+        assert record.abstract is None
+        llm = FakeLLM()
+        result = await run_monitor_subscription(session, subscription, adapter, llm)
+        assert result.updated == 1
+        assert record.abstract == "KRAS mutations drive cancer."
+        assert record.evidence_level == "E1"
+        assert event.last_metadata_hash != first_hash
+        assert event.status == "L1_READY"
+        assert len((await session.execute(select(SourceSnapshot))).scalars().all()) == 2
+
+
+class RelationEnrichmentAdapter(FakeCrossrefDiscovery):
+    async def discover_works(self, **kwargs):
+        items, token = await super().discover_works(**kwargs)
+        if len(self.calls) > 1:
+            items[0]["relation"] = {"is-preprint-of": [{"id": "10.1000/target"}]}
+        return items, token
+
+
+async def test_unresolved_identity_recovers_when_relation_arrives(db: Database):
+    async with db.get_session() as session:
+        source = Source(name="crossref", source_type="api", config={})
+        session.add(source)
+        target_work = Work(work_id="W-target", title="A newly monitored KRAS paper")
+        session.add(target_work)
+        await session.flush()
+        target_record = Record(
+            record_id="R-target", work_id=target_work.id,
+            title="A newly monitored KRAS paper", authors=[{"name": "Jane Doe"}],
+            doi="10.1000/target", evidence_level="E0",
+        )
+        session.add(target_record)
+        await session.flush()
+        session.add(WorkIdentifier(
+            work_id=target_work.id, identifier_type="doi", identifier_value="10.1000/target"
+        ))
+        subscription = MonitorSubscription(
+            name="Identity", subscription_type="journal", source_id=source.id,
+            config={"issn": "1234-5678"},
+        )
+        session.add(subscription)
+        await session.flush()
+        adapter = RelationEnrichmentAdapter()
+        await run_monitor_subscription(session, subscription, adapter)
+        event = (await session.execute(select(DiscoveryEvent))).scalar_one()
+        monitored = (await session.execute(select(Record).where(
+            Record.doi == "10.1000/monitor"
+        ))).scalar_one()
+        assert event.status == "IDENTITY_REVIEW"
+        assert monitored.work_id is None
+        await run_monitor_subscription(session, subscription, adapter)
+        assert monitored.work_id == target_work.id
+        assert event.work_id == target_work.id
