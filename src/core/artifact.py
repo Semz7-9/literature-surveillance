@@ -68,6 +68,15 @@ def verify_snapshot_integrity(snapshot: SourceSnapshot) -> None:
     Raises:
         ValueError: if either hash doesn't match, naming which one failed.
     """
+    if (snapshot.raw_abstract is None) != (snapshot.raw_hash is None):
+        raise ValueError(
+            f"Snapshot {snapshot.id} raw_abstract and raw_hash must either both exist or both be null"
+        )
+    if (snapshot.analysis_text is None) != (snapshot.analysis_hash is None):
+        raise ValueError(
+            f"Snapshot {snapshot.id} analysis_text and analysis_hash must either both exist or both be null"
+        )
+
     if snapshot.raw_hash:
         actual_raw_hash = _hash(snapshot.raw_abstract)
         if actual_raw_hash != snapshot.raw_hash:

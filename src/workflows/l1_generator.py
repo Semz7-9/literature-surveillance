@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..llm.client import LLMClient
 from ..core.artifact import verify_snapshot_integrity
-from ..core.models import Record, SourceSnapshot, AnalysisArtifact
+from ..core.models import Record, SourceSnapshot, AnalysisArtifact, Work
 from skills.l1_literature_card.contract import L1Input, L1Output, SKILL_VERSION, SCHEMA_VERSION
 from skills.l1_literature_card.validator import validate_l1_output
 
@@ -114,8 +114,13 @@ async def run_l1(
     if existing:
         return existing
 
+    work = await session.get(Work, record.work_id)
+    if work is None:
+        raise ValueError(
+            f"Record {record.record_id} references missing Work {record.work_id}"
+        )
     input_data = L1Input(
-        work_id=f"W{record.work_id}",
+        work_id=work.work_id,
         record_id=record.record_id,
         title=record.title,
         authors=[a["name"] for a in record.authors],
