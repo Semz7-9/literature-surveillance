@@ -85,7 +85,9 @@ pip install -e .
 literature-surveillance
 ```
 
-Windows 也可以双击根目录的 `launch_desktop.pyw`。桌面窗口会在内部启动仅绑定
+Windows 推荐双击根目录的 `启动文献助手.cmd`；它会固定使用项目的 `.venv`，启动失败时
+保留错误信息。也可以双击 `launch_desktop.pyw`，该入口会自动转交给 `.venv`，并在失败时
+弹窗提示、把详情写入 `data/desktop-startup.log`。桌面窗口会在内部启动仅绑定
 `127.0.0.1` 随机端口的本地服务，不会打开浏览器，也不会向局域网暴露端口；关闭
 窗口时，本地服务和 Monitor Scheduler 会一同正常退出。
 
