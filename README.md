@@ -76,9 +76,22 @@ Claim Status (基于它的断言是否有效)
 
 MIT
 
+## 本地桌面应用
+
+安装项目后直接启动桌面窗口：
+
+```bash
+pip install -e .
+literature-surveillance
+```
+
+Windows 也可以双击根目录的 `launch_desktop.pyw`。桌面窗口会在内部启动仅绑定
+`127.0.0.1` 随机端口的本地服务，不会打开浏览器，也不会向局域网暴露端口；关闭
+窗口时，本地服务和 Monitor Scheduler 会一同正常退出。
+
 ## Literature Monitor v0.1
 
-在已有 SQLite 数据库上启动最小阅读界面：
+开发调试时仍可单独启动 Web UI：
 
 ```bash
 uvicorn src.web.app:app --reload

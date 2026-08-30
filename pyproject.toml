@@ -19,7 +19,11 @@ dependencies = [
     "jinja2>=3.1",
     "uvicorn>=0.30",
     "python-multipart>=0.0.9",
+    "pywebview>=5.0",
 ]
+
+[project.scripts]
+literature-surveillance = "src.desktop:main"
 
 [project.optional-dependencies]
 dev = [
