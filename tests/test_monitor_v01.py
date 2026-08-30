@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 
 from src.core.database import Database
+from src.core.clock import FakeClock
 from src.core.models import DiscoveryEvent, MonitorSubscription, Record, Source, SourceCursor
 from src.workflows.monitor import run_monitor_subscription
 from src.workflows.scheduler import MonitorScheduler
@@ -55,8 +56,9 @@ async def test_pubmed_monitor_keeps_abstract_mesh_and_pmid_without_doi(tmp_path)
     subscription_id = await _seed_subscription(database)
     async with database.get_session() as session:
         subscription = await session.get(MonitorSubscription, subscription_id)
+        observed_at = datetime(2026, 8, 29, 6)
         result = await run_monitor_subscription(
-            session, subscription, FakePubMed(), now=datetime(2026, 8, 29, 6)
+            session, subscription, FakePubMed(), now=observed_at
         )
         await session.commit()
         record = (await session.execute(select(Record))).scalar_one()
@@ -67,6 +69,7 @@ async def test_pubmed_monitor_keeps_abstract_mesh_and_pmid_without_doi(tmp_path)
         assert record.extra_metadata["pmid"] == "41234567"
         assert record.extra_metadata["mesh"] == ["Chemical Biology", "Proteins"]
         assert event.external_identifier == "pmid:41234567"
+        assert event.discovered_at == observed_at
         assert event.work_id is not None
     await database.close()
 
@@ -85,14 +88,17 @@ async def test_scheduler_runs_daily_for_a_simulated_unattended_week(tmp_path):
     async def no_llm():
         return None
 
-    scheduler = MonitorScheduler(database, adapter_factory, no_llm)
     first = datetime(2026, 8, 29, 6)
-    assert await scheduler.run_due_once(now=first) == [subscription_id]
-    assert await scheduler.run_due_once(now=first + timedelta(hours=23)) == []
+    clock = FakeClock(first)
+    scheduler = MonitorScheduler(database, adapter_factory, no_llm, clock=clock)
+    assert await scheduler.run_due_once() == [subscription_id]
+    clock.advance(timedelta(hours=23))
+    assert await scheduler.run_due_once() == []
+    clock.advance(timedelta(hours=1))
     for day in range(1, 8):
-        assert await scheduler.run_due_once(
-            now=first + timedelta(days=day)
-        ) == [subscription_id]
+        assert await scheduler.run_due_once() == [subscription_id]
+        if day < 7:
+            clock.advance(timedelta(days=1))
     assert len(adapters) == 8 and all(adapter.closed for adapter in adapters)
     async with database.get_session() as session:
         cursor = (await session.execute(select(SourceCursor))).scalar_one()

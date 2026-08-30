@@ -100,3 +100,19 @@ uvicorn src.web.app:app --reload
 打开 `http://127.0.0.1:8000` 可管理 Crossref / PubMed 期刊与主题订阅，设置启停和检查频率，并在自然周收件箱执行 Keep、Ignore、Queue L2。默认使用 `config.yaml` 的数据库路径；没有该文件时使用 `data/literature.db`。
 
 将 `config.yaml` 中的 `monitor.enabled` 设为 `true` 后，应用内调度器会按每个订阅的频率自动运行；无需打开页面或点击检查，但运行 `uvicorn` 的进程需要保持在线。系统会把新发现送入现有的 Work identity、Snapshot 和 L1 流程。PubMed 会补充 Abstract 与 MeSH；没有配置 LLM API key 时仍会完成发现和 L0/E1 入库，但不会生成新的 L1 卡片。“立即检查”保留用于首次配置和排障。
+
+## Monitor 时间压缩验收
+
+不用真实等待一周，可以将历史 API 数据按虚拟日期逐日回放：
+
+```bash
+python scripts/simulate_monitor_period.py \
+  --from 2026-08-18 --to 2026-08-24 \
+  --provider crossref --name acceptance-jmedchem --issn 1520-4804 \
+  --database data/acceptance_crossref.db --reset \
+  --restart-each-day --repeat-each-day 2 --fail-on-day 4
+```
+
+脚本使用隔离数据库，支持每天重启、同日重复调度、指定日期 provider 故障，
+并检查重复 DOI、MERGED Work 引用、悬挂运行与未清 backlog。完整验收记录见
+`docs/MONITOR_ACCEPTANCE.md`。

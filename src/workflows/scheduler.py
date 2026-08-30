@@ -7,6 +7,7 @@ from typing import Awaitable, Callable
 from sqlalchemy import select
 
 from ..core.database import Database
+from ..core.clock import Clock, RealClock
 from ..core.models import MonitorSubscription, Source, SourceCursor
 from .monitor import run_monitor_subscription
 
@@ -20,12 +21,14 @@ class MonitorScheduler:
         *,
         default_interval_hours: int = 24,
         poll_seconds: int = 60,
+        clock: Clock | None = None,
     ):
         self.database = database
         self.adapter_factory = adapter_factory
         self.llm_factory = llm_factory
         self.default_interval_hours = default_interval_hours
         self.poll_seconds = poll_seconds
+        self.clock = clock or RealClock()
         self.task: asyncio.Task | None = None
         self.last_tick: datetime | None = None
 
@@ -56,7 +59,7 @@ class MonitorScheduler:
             await asyncio.sleep(self.poll_seconds)
 
     async def run_due_once(self, *, now: datetime | None = None) -> list[int]:
-        now = now or datetime.utcnow()
+        now = now or self.clock.now()
         self.last_tick = now
         async with self.database.get_session() as session:
             subscription_ids = (await session.execute(

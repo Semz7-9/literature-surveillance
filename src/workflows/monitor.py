@@ -211,6 +211,7 @@ async def run_monitor_subscription(
         await session.flush()
 
     lookback_days = int(subscription.config.get("lookback_days", 7))
+    cursor_overlap_days = int(subscription.config.get("cursor_overlap_days", 1))
     page_size = min(int(subscription.config.get("page_size", 100)), 1000)
     max_items = int(subscription.config.get("max_items_per_run", 500))
     max_pages = int(subscription.config.get("max_pages_per_run", 5))
@@ -221,7 +222,10 @@ async def run_monitor_subscription(
         until = datetime.fromisoformat(active_window["until"])
         adapter_cursor = cursor.cursor_value
     else:
-        start = (cursor.last_success_at - timedelta(days=1)) if cursor.last_success_at else now - timedelta(days=lookback_days)
+        start = (
+            cursor.last_success_at - timedelta(days=cursor_overlap_days)
+            if cursor.last_success_at else now - timedelta(days=lookback_days)
+        )
         until = now
         adapter_cursor = "*"
 
@@ -262,7 +266,7 @@ async def run_monitor_subscription(
                 feed_mode=feed_mode, cursor=adapter_cursor, rows=requested_rows,
             )
             result.pages += 1
-            health.last_success = datetime.utcnow()
+            health.last_success = now
             health.consecutive_failures = 0
             health.status = "healthy"
             health.last_error = None
@@ -288,7 +292,7 @@ async def run_monitor_subscription(
                             else f"https://pubmed.ncbi.nlm.nih.gov/{raw_pmid}/"
                         ),
                         raw_metadata=raw_work, status="DISCOVERED",
-                        last_seen_at=now, last_metadata_hash=observed_hash,
+                        discovered_at=now, last_seen_at=now, last_metadata_hash=observed_hash,
                     )
                     session.add(event)
                     await session.flush()
@@ -319,7 +323,7 @@ async def run_monitor_subscription(
         monitor_run.status = "FAILED"
         monitor_run.error = str(exc)
         if _provider_failure(exc):
-            health.last_failure = datetime.utcnow()
+            health.last_failure = now
             health.consecutive_failures += 1
             health.status = "down" if health.consecutive_failures >= 3 else "degraded"
             health.last_error = str(exc)
@@ -340,7 +344,7 @@ async def run_monitor_subscription(
         "active_window": {"from": start.isoformat(), "until": until.isoformat()} if has_more else None,
         "has_more": has_more, "last_result": result.__dict__,
     }
-    monitor_run.finished_at = datetime.utcnow()
+    monitor_run.finished_at = now
     monitor_run.cursor_end = cursor.cursor_value
     monitor_run.discovered = result.discovered
     monitor_run.created = result.created
