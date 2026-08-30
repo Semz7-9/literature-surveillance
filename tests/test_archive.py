@@ -47,7 +47,8 @@ def test_archive_scope_lexicon_search_work_and_timeline(tmp_path):
         })
         assert created.status_code == 200
         assert "Chemical Space" in created.text
-        assert "下一步请保存第一版 Scope" in created.text
+        assert "档案初稿已建立" in created.text
+        assert "Advanced / Expert Mode" in created.text
 
         scope = client.post("/archives/1/scope", data={
             "core_concepts": "chemical space\nmolecular space",
@@ -100,8 +101,8 @@ def test_archive_scope_lexicon_search_work_and_timeline(tmp_path):
     async def verify():
         async with app.state.database.get_session() as session:
             archive = (await session.execute(select(TopicArchive))).scalar_one()
-            assert archive.revision == 9
-            assert (await session.execute(select(func.count(ArchiveScope.id)))).scalar_one() == 2
+            assert archive.revision == 11
+            assert (await session.execute(select(func.count(ArchiveScope.id)))).scalar_one() == 3
             assert (await session.execute(select(func.count(ConceptSet.id)))).scalar_one() == 2
             strategy = (await session.execute(select(SearchStrategy))).scalar_one()
             assert len(strategy.queries) == 2 and strategy.executed_at is not None
@@ -113,7 +114,7 @@ def test_archive_scope_lexicon_search_work_and_timeline(tmp_path):
             hidden = (await session.execute(select(MonitorSubscription))).scalars().all()
             assert len(hidden) == 2
             assert all(item.subscription_type == "archive_search" and not item.enabled for item in hidden)
-            assert (await session.execute(select(func.count(ArchiveRevision.id)))).scalar_one() == 9
+            assert (await session.execute(select(func.count(ArchiveRevision.id)))).scalar_one() == 11
 
     asyncio.run(verify())
 

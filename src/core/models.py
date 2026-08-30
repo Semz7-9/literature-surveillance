@@ -678,6 +678,8 @@ class TopicArchive(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
+    focus: Mapped[str] = mapped_column(Text, default="")
+    background_mode: Mapped[str] = mapped_column(String(16), default="AUTO")
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE", index=True)
     revision: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -802,3 +804,152 @@ class ArchiveRevision(Base):
     __table_args__ = (
         UniqueConstraint("archive_id", "version", name="uq_archive_revision_version"),
     )
+
+
+# ============================================================================
+# Archive Automation Foundation
+# ============================================================================
+
+
+class ArchiveBuildRun(Base):
+    """Durable state machine for one automated Archive build attempt."""
+
+    __tablename__ = "archive_build_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    state: Mapped[str] = mapped_column(String(32), default="CREATED", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    input_version: Mapped[int] = mapped_column(Integer, default=1)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class ArchiveBuildStep(Base):
+    """Append-only execution record for a resumable build stage."""
+
+    __tablename__ = "archive_build_steps"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("archive_build_runs.id"), index=True)
+    stage: Mapped[str] = mapped_column(String(32), index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    input_version: Mapped[int] = mapped_column(Integer, default=1)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    output_artifact: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "stage", "attempt", name="uq_archive_build_step_attempt"),
+    )
+
+
+class BackgroundProfile(Base):
+    """Reusable disciplinary background profile shared across Archives."""
+
+    __tablename__ = "background_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    discipline: Mapped[str] = mapped_column(String(255), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class BackgroundNode(Base):
+    """Canonical reusable knowledge node; contributions never overwrite its core."""
+
+    __tablename__ = "background_nodes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("background_profiles.id"), index=True)
+    parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("background_nodes.id"), index=True)
+    title: Mapped[str] = mapped_column(String(255), index=True)
+    canonical_summary: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "title", name="uq_background_profile_node_title"),
+    )
+
+
+class ArchiveBackgroundLink(Base):
+    """Selection decision connecting an Archive to a shared BackgroundNode."""
+
+    __tablename__ = "archive_background_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("background_nodes.id"), index=True)
+    relevance: Mapped[float] = mapped_column(Float, default=0.0)
+    confidence: Mapped[str] = mapped_column(String(16), default="MEDIUM")
+    selection_reason: Mapped[str] = mapped_column(Text, default="")
+    selected_by: Mapped[str] = mapped_column(String(32), default="BACKGROUND_RESOLVER")
+    status: Mapped[str] = mapped_column(String(16), default="ATTACHED", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "node_id", name="uq_archive_background_node"),
+    )
+
+
+class BackgroundOperatorContribution(Base):
+    """Immutable raw operator thought, deliberately separate from AI and canonical text."""
+
+    __tablename__ = "background_operator_contributions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("background_nodes.id"), index=True)
+    archive_id: Mapped[Optional[int]] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    contribution_type: Mapped[str] = mapped_column(String(32), index=True)
+    raw_text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BackgroundAIContribution(Base):
+    """Provenanced model output addressed by capability role, not a hard-coded vendor."""
+
+    __tablename__ = "background_ai_contributions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("background_nodes.id"), index=True)
+    archive_id: Mapped[Optional[int]] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    role: Mapped[str] = mapped_column(String(32), index=True)
+    input_refs: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    output: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BackgroundSource(Base):
+    """Source provenance supporting a canonical BackgroundNode."""
+
+    __tablename__ = "background_sources"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("background_nodes.id"), index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    url: Mapped[Optional[str]] = mapped_column(Text)
+    citation: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

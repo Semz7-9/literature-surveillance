@@ -103,7 +103,32 @@ uvicorn src.web.app:app --reload
 
 将 `config.yaml` 中的 `monitor.enabled` 设为 `true` 后，应用内调度器会按每个订阅的频率自动运行；无需打开页面或点击检查，但运行 `uvicorn` 的进程需要保持在线。系统会把新发现送入现有的 Work identity、Snapshot 和 L1 流程。PubMed 会补充 Abstract 与 MeSH；没有配置 LLM API key 时仍会完成发现和 L0/E1 入库，但不会生成新的 L1 卡片。“立即检查”保留用于首次配置和排障。
 
-## Topic Archive v0.1
+## Auto Archive Builder
+
+默认创建专题只需要 `topic`，可选填写 `focus`。系统会持久化
+`ArchiveBuildRun`，自动形成 provisional Scope，并从 Shared Background Library
+挂接高置信背景节点；中置信节点进入 Review Queue。关闭桌面程序再打开后，步骤状态、
+输入版本、输出产物与错误仍然存在。
+
+```text
+Topic + optional focus
+→ persisted BuildRun
+→ provisional Scope
+→ BackgroundResolver
+→ shared Background links
+→ operator review
+```
+
+本批明确停在 `LEXICON`，Automatic Scope + Lexicon + Query 属于下一批。固定验收：
+
+```bash
+python scripts/accept_archive_automation_foundation.py \
+  --database data/archive_automation_acceptance.db --reset
+```
+
+详细边界见 `docs/ARCHIVE_AUTOMATION_FOUNDATION.md`。
+
+## Topic Archive v0.1（Expert Mode）
 
 “专题档案”支持完整的本地纵向工作流：
 
@@ -115,6 +140,7 @@ uvicorn src.web.app:app --reload
 → Archive Corpus → 基本 Timeline → Revision Log
 ```
 
+这些手工能力现在位于 `Advanced / Expert Mode`，作为可审计编辑和排障工具保留。
 Archive Search 使用隐藏的一次性订阅复用现有 ingestion/identity 核心，但不会混入
 普通 Monitor Inbox。可运行隔离的真实 PubMed 验收：
 

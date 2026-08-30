@@ -1,9 +1,22 @@
 {% extends "base.html" %}
 {% block title %}学术专题档案{% endblock %}
 {% block content %}
-<section class="hero archive-hero"><div><p class="kicker">Topic Archive v0.1</p><h1>把一个研究主题变成可持续维护的档案</h1><p class="lead">从明确范围开始，保存背景与术语，生成可审计的 PubMed 检索策略，并把去重后的 Works 组织成时间线。</p></div><ol class="workflow"><li><b>定义边界</b><span>Scope 有版本，人控制范围</span></li><li><b>建立方法</b><span>Concept Sets → Boolean Queries</span></li><li><b>形成档案</b><span>真实检索 → Works → Timeline</span></li></ol></section>
+<section class="hero archive-hero">
+  <div><p class="kicker">Auto Archive Builder</p><h1>给出专题，系统先建立档案初稿</h1><p class="lead">自动形成 provisional Scope、解析可复用的学科背景并保存建档进度。你只处理真正影响边界的判断。</p></div>
+  <ol class="workflow"><li><b>输入 Topic</b><span>关注重点完全可选</span></li><li><b>系统自动建档</b><span>流程持久化，关闭后可恢复</span></li><li><b>审查关键问题</b><span>手工编辑退到 Expert Mode</span></li></ol>
+</section>
 {% if notice %}<p class="notice">操作已完成。</p>{% endif %}
-<section class="archive-create"><div class="section-heading"><div><p class="kicker">New Archive</p><h2>新建专题档案</h2></div></div><form method="post" action="/archives" class="inline-create"><label>专题名称<input name="title" required placeholder="例如：Chemical Space"></label><label>一句话说明<input name="description" placeholder="这个档案试图回答什么？"></label><button>创建并定义 Scope</button></form></section>
+<section class="archive-create auto-create">
+  <div class="section-heading"><div><p class="kicker">New Archive</p><h2>建立专题档案</h2></div><span class="auto-pill">Background: Auto</span></div>
+  <form method="post" action="/archives" class="auto-archive-form"><label>专题名称<input name="title" required autofocus placeholder="例如：Targeted Covalent Inhibitor Design"></label><label>可选关注重点<input name="focus" placeholder="例如：medicinal chemistry / mechanism / history"></label><button>建立专题档案</button></form>
+  <p class="form-hint">无需先写 Scope、Background、词表或 Boolean Query。</p>
+</section>
 <div class="section-heading"><div><p class="kicker">Your Archives</p><h2>已有专题</h2></div><span class="count">{{ archives|length }} 个</span></div>
-<div class="archive-list">{% for archive in archives %}<a class="archive-item" href="/archives/{{ archive.id }}"><div><span class="archive-status">{{ archive.status }}</span><h3>{{ archive.title }}</h3><p>{{ archive.description or "尚未填写专题说明" }}</p></div><div class="archive-item-meta"><strong>{{ counts[archive.id] }}</strong><span>Works</span><small>Revision {{ archive.revision }}</small></div></a>{% else %}<section class="empty"><div class="empty-icon">A</div><h2>从第一个真实专题开始</h2><p>建议选择一个边界清楚的窄主题，先完成 Scope、Lexicon 和第一次 PubMed 检索。</p></section>{% endfor %}</div>
+<div class="archive-list">
+{% for archive in archives %}
+  <a class="archive-item" href="/archives/{{ archive.id }}"><div><span class="archive-status">{{ archive.background_mode }} · {{ runs[archive.id].status if runs[archive.id] else 'EXPERT' }}</span><h3>{{ archive.title }}</h3><p>{{ archive.focus or archive.description or "未指定额外关注重点" }}</p></div><div class="archive-item-meta"><strong>{{ counts[archive.id] }}</strong><span>Works</span><small>{{ runs[archive.id].state if runs[archive.id] else 'No Build Run' }}</small></div></a>
+{% else %}
+  <section class="empty"><div class="empty-icon">A</div><h2>输入一个专题即可开始</h2><p>系统会先完成建档骨架，再把真正有歧义的问题交给你。</p></section>
+{% endfor %}
+</div>
 {% endblock %}

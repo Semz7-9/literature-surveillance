@@ -14,7 +14,9 @@ from sqlalchemy import func, select
 from ..core.config import load_config
 from ..core.database import Database
 from ..core.models import (
-    AnalysisArtifact, ArchiveBackground, ArchiveRevision, ArchiveScope, ArchiveWork,
+    AnalysisArtifact, ArchiveBackground, ArchiveBackgroundLink, ArchiveBuildRun,
+    ArchiveBuildStep, ArchiveRevision, ArchiveScope, ArchiveWork, BackgroundAIContribution,
+    BackgroundNode, BackgroundOperatorContribution, BackgroundProfile,
     ConceptSet, ConceptTerm, DiscoveryEvent, IdentityEdge, MonitorRun,
     MonitorSubscription, PendingIdentifierRelation, ReadingQueue, Record,
     SearchStrategy, Source, SourceCursor, SourceHealth, TopicArchive, UserWorkState,
@@ -27,6 +29,9 @@ from ..workflows.monitor import run_monitor_subscription
 from ..workflows.scheduler import MonitorScheduler
 from ..workflows.archive import (
     execute_search_strategy, generate_search_strategy, record_archive_revision, split_lines,
+)
+from ..workflows.archive_builder import (
+    add_operator_contribution, create_archive_build_run, run_archive_foundation,
 )
 
 WEB_ROOT = Path(__file__).parent
@@ -307,8 +312,14 @@ def create_app(
                 ))).scalar_one()
                 for archive in items
             }
+            runs = {
+                archive.id: (await session.execute(select(ArchiveBuildRun).where(
+                    ArchiveBuildRun.archive_id == archive.id
+                ).order_by(ArchiveBuildRun.id.desc()).limit(1))).scalar_one_or_none()
+                for archive in items
+            }
             return templates.TemplateResponse(request, "archives.html", {
-                "archives": items, "counts": counts, "notice": notice,
+                "archives": items, "counts": counts, "runs": runs, "notice": notice,
             })
 
     @app.get("/archives/structure", response_class=HTMLResponse)
@@ -317,9 +328,10 @@ def create_app(
 
     @app.post("/archives")
     async def create_archive(
-        title: str = Form(...), description: str = Form(""),
+        title: str = Form(...), focus: str = Form(""), description: str = Form(""),
     ):
         title = title.strip()
+        focus = (focus or description).strip()
         if not title:
             raise HTTPException(422, "专题名称不能为空")
         async with database.get_session() as session:
@@ -327,13 +339,17 @@ def create_app(
                 TopicArchive.title == title
             ))).scalar_one_or_none():
                 raise HTTPException(409, "同名专题档案已存在")
-            archive = TopicArchive(title=title, description=description.strip())
+            archive = TopicArchive(
+                title=title, description=focus, focus=focus, background_mode="AUTO",
+            )
             session.add(archive)
             await session.flush()
             await record_archive_revision(
                 session, archive, "CREATE", "创建专题档案",
-                {"title": title, "description": description.strip()},
+                {"topic": title, "focus": focus, "background_mode": "AUTO"},
             )
+            run = await create_archive_build_run(session, archive)
+            await run_archive_foundation(session, archive, run)
             await session.commit()
             archive_id = archive.id
         return RedirectResponse(url=f"/archives/{archive_id}?notice=created", status_code=303)
@@ -374,11 +390,56 @@ def create_app(
         revisions = (await session.execute(select(ArchiveRevision).where(
             ArchiveRevision.archive_id == archive.id
         ).order_by(ArchiveRevision.version.desc()))).scalars().all()
+        build_run = (await session.execute(select(ArchiveBuildRun).where(
+            ArchiveBuildRun.archive_id == archive.id
+        ).order_by(ArchiveBuildRun.id.desc()).limit(1))).scalar_one_or_none()
+        build_steps = []
+        if build_run:
+            all_steps = (await session.execute(select(ArchiveBuildStep).where(
+                ArchiveBuildStep.run_id == build_run.id
+            ).order_by(ArchiveBuildStep.id))).scalars().all()
+            latest_by_stage = {}
+            for step in all_steps:
+                latest_by_stage[step.stage] = step
+            build_steps = list(latest_by_stage.values())
+        links = (await session.execute(select(ArchiveBackgroundLink).where(
+            ArchiveBackgroundLink.archive_id == archive.id,
+            ArchiveBackgroundLink.status != "DISMISSED",
+        ).order_by(ArchiveBackgroundLink.relevance.desc()))).scalars().all()
+        background_cards = []
+        for link in links:
+            node = await session.get(BackgroundNode, link.node_id)
+            if node is None:
+                continue
+            profile = await session.get(BackgroundProfile, node.profile_id)
+            operator_contributions = (await session.execute(
+                select(BackgroundOperatorContribution).where(
+                    BackgroundOperatorContribution.archive_id == archive.id,
+                    BackgroundOperatorContribution.node_id == node.id,
+                ).order_by(BackgroundOperatorContribution.created_at)
+            )).scalars().all()
+            ai_contributions = (await session.execute(select(BackgroundAIContribution).where(
+                BackgroundAIContribution.archive_id == archive.id,
+                BackgroundAIContribution.node_id == node.id,
+            ).order_by(BackgroundAIContribution.created_at))).scalars().all()
+            background_cards.append({
+                "link": link, "node": node, "profile": profile,
+                "operator_contributions": operator_contributions,
+                "ai_contributions": ai_contributions,
+            })
         return {
             "archive": archive, "scopes": scopes, "scope": scopes[0] if scopes else None,
             "backgrounds": backgrounds, "concept_sets": concept_sets, "terms": terms,
             "strategies": strategies, "strategy": strategies[0] if strategies else None,
             "cards": cards, "revisions": revisions,
+            "build_run": build_run, "build_steps": build_steps,
+            "background_cards": background_cards,
+            "attached_backgrounds": [
+                item for item in background_cards if item["link"].status == "ATTACHED"
+            ],
+            "background_candidates": [
+                item for item in background_cards if item["link"].status == "CANDIDATE"
+            ],
         }
 
     @app.get("/archives/{archive_id}", response_class=HTMLResponse)
@@ -395,6 +456,77 @@ def create_app(
                 **context, "notice": notice, "search_discovered": discovered,
                 "search_added": added,
             })
+
+    @app.post("/archives/{archive_id}/build")
+    async def build_archive(archive_id: int):
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            if archive is None:
+                raise HTTPException(404, "专题档案不存在")
+            run = await create_archive_build_run(session, archive)
+            await run_archive_foundation(session, archive, run)
+            await session.commit()
+        notice = "build-failed" if run.status == "FAILED" else "build-completed"
+        return RedirectResponse(url=f"/archives/{archive_id}?notice={notice}", status_code=303)
+
+    @app.post("/archives/{archive_id}/build/{run_id}/resume")
+    async def resume_archive_build(archive_id: int, run_id: int):
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            run = await session.get(ArchiveBuildRun, run_id)
+            if archive is None or run is None or run.archive_id != archive.id:
+                raise HTTPException(404, "Archive Build Run 不存在")
+            await run_archive_foundation(session, archive, run)
+            await session.commit()
+        notice = "build-failed" if run.status == "FAILED" else "build-resumed"
+        return RedirectResponse(url=f"/archives/{archive_id}?notice={notice}", status_code=303)
+
+    @app.post("/archives/{archive_id}/background-links/{link_id}/decision")
+    async def decide_background_link(
+        archive_id: int, link_id: int, decision: str = Form(...),
+    ):
+        if decision not in {"ATTACHED", "DISMISSED"}:
+            raise HTTPException(422, "不支持的 Background 决策")
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            link = await session.get(ArchiveBackgroundLink, link_id)
+            if archive is None or link is None or link.archive_id != archive.id:
+                raise HTTPException(404, "Background Link 不存在")
+            link.status = decision
+            link.selected_by = "OPERATOR"
+            node = await session.get(BackgroundNode, link.node_id)
+            await record_archive_revision(
+                session, archive, "BACKGROUND_REVIEW",
+                f"Background {decision.lower()}：{node.title if node else link.node_id}",
+                {"link_id": link.id, "decision": decision},
+            )
+            await session.commit()
+        return RedirectResponse(url=f"/archives/{archive_id}?notice=background-reviewed", status_code=303)
+
+    @app.post("/archives/{archive_id}/background-links/{link_id}/operator-notes")
+    async def add_background_operator_note(
+        archive_id: int, link_id: int,
+        contribution_type: str = Form(...), raw_text: str = Form(...),
+    ):
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            link = await session.get(ArchiveBackgroundLink, link_id)
+            if archive is None or link is None or link.archive_id != archive.id:
+                raise HTTPException(404, "Background Link 不存在")
+            try:
+                contribution = await add_operator_contribution(
+                    session, archive_id=archive.id, node_id=link.node_id,
+                    contribution_type=contribution_type, raw_text=raw_text,
+                )
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            await record_archive_revision(
+                session, archive, "OPERATOR_BACKGROUND_NOTE",
+                f"保存操作者原始想法：{contribution.contribution_type}",
+                {"contribution_id": contribution.id, "node_id": link.node_id},
+            )
+            await session.commit()
+        return RedirectResponse(url=f"/archives/{archive_id}?notice=operator-note-added", status_code=303)
 
     @app.post("/archives/{archive_id}/scope")
     async def save_archive_scope(

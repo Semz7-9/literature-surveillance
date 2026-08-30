@@ -29,6 +29,14 @@ from .models import (
     SearchStrategy,
     ArchiveWork,
     ArchiveRevision,
+    ArchiveBuildRun,
+    ArchiveBuildStep,
+    BackgroundProfile,
+    BackgroundNode,
+    ArchiveBackgroundLink,
+    BackgroundOperatorContribution,
+    BackgroundAIContribution,
+    BackgroundSource,
 )
 
 __all__ = [
@@ -60,4 +68,12 @@ __all__ = [
     "SearchStrategy",
     "ArchiveWork",
     "ArchiveRevision",
+    "ArchiveBuildRun",
+    "ArchiveBuildStep",
+    "BackgroundProfile",
+    "BackgroundNode",
+    "ArchiveBackgroundLink",
+    "BackgroundOperatorContribution",
+    "BackgroundAIContribution",
+    "BackgroundSource",
 ]

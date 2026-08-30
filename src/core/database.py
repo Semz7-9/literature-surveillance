@@ -59,6 +59,20 @@ class Database:
                 await conn.execute(
                     text("ALTER TABLE discovery_events ADD COLUMN last_metadata_hash VARCHAR(64)")
                 )
+            archive_columns = {
+                row[1] for row in (
+                    await conn.execute(text("PRAGMA table_info(topic_archives)"))
+                ).fetchall()
+            }
+            if archive_columns and "focus" not in archive_columns:
+                await conn.execute(
+                    text("ALTER TABLE topic_archives ADD COLUMN focus TEXT NOT NULL DEFAULT ''")
+                )
+            if archive_columns and "background_mode" not in archive_columns:
+                await conn.execute(text(
+                    "ALTER TABLE topic_archives ADD COLUMN background_mode VARCHAR(16) "
+                    "NOT NULL DEFAULT 'AUTO'"
+                ))
             await conn.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_source_health_source_id "
                 "ON source_health(source_id)"
