@@ -21,6 +21,14 @@ from .models import (
     ClaimStatus,
     IdentityEvidenceType,
     IdentityStatus,
+    TopicArchive,
+    ArchiveScope,
+    ArchiveBackground,
+    ConceptSet,
+    ConceptTerm,
+    SearchStrategy,
+    ArchiveWork,
+    ArchiveRevision,
 )
 
 __all__ = [
@@ -44,4 +52,12 @@ __all__ = [
     "ClaimStatus",
     "IdentityEvidenceType",
     "IdentityStatus",
+    "TopicArchive",
+    "ArchiveScope",
+    "ArchiveBackground",
+    "ConceptSet",
+    "ConceptTerm",
+    "SearchStrategy",
+    "ArchiveWork",
+    "ArchiveRevision",
 ]

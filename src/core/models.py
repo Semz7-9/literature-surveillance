@@ -663,3 +663,142 @@ class SourceHealth(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+# ============================================================================
+# Topic Archive v0.1
+# ============================================================================
+
+
+class TopicArchive(Base):
+    """A durable, human-controlled research topic."""
+
+    __tablename__ = "topic_archives"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="ACTIVE", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class ArchiveScope(Base):
+    """Immutable version of an Archive's inclusion and exclusion boundary."""
+
+    __tablename__ = "archive_scopes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    core_concepts: Mapped[list[str]] = mapped_column(JSON, default=list)
+    background_concepts: Mapped[list[str]] = mapped_column(JSON, default=list)
+    exclusions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "version", name="uq_archive_scope_version"),
+    )
+
+
+class ArchiveBackground(Base):
+    """Human-provided stable background attached to an Archive."""
+
+    __tablename__ = "archive_backgrounds"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    content: Mapped[str] = mapped_column(Text)
+    source_url: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ConceptSet(Base):
+    """A named search concept, such as Representation or Navigation."""
+
+    __tablename__ = "concept_sets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "name", name="uq_archive_concept_set_name"),
+    )
+
+
+class ConceptTerm(Base):
+    """One auditable term in a Concept Set."""
+
+    __tablename__ = "concept_terms"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    concept_set_id: Mapped[int] = mapped_column(ForeignKey("concept_sets.id"), index=True)
+    term: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(16), default="include")
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("concept_set_id", "term", name="uq_concept_set_term"),
+    )
+
+
+class SearchStrategy(Base):
+    """Versioned, inspectable Boolean queries generated from Concept Sets."""
+
+    __tablename__ = "search_strategies"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    provider: Mapped[str] = mapped_column(String(32), default="pubmed")
+    queries: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "version", name="uq_archive_search_strategy_version"),
+    )
+
+
+class ArchiveWork(Base):
+    """Membership of a canonical Work in an Archive corpus."""
+
+    __tablename__ = "archive_works"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("works.id"), index=True)
+    strategy_id: Mapped[Optional[int]] = mapped_column(ForeignKey("search_strategies.id"))
+    matched_queries: Mapped[list[str]] = mapped_column(JSON, default=list)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "work_id", name="uq_archive_work_membership"),
+    )
+
+
+class ArchiveRevision(Base):
+    """Append-only user-visible history of meaningful Archive changes."""
+
+    __tablename__ = "archive_revisions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    change_type: Mapped[str] = mapped_column(String(64))
+    summary: Mapped[str] = mapped_column(Text)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "version", name="uq_archive_revision_version"),
+    )

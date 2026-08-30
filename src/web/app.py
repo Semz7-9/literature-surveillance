@@ -1,4 +1,4 @@
-"""FastAPI application for the deliberately small UI-0 vertical slice."""
+"""Local UI for Topic Archive and Literature Monitor product workflows."""
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -9,20 +9,25 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..core.config import load_config
 from ..core.database import Database
 from ..core.models import (
-    AnalysisArtifact, DiscoveryEvent, IdentityEdge, MonitorRun, MonitorSubscription,
-    PendingIdentifierRelation, ReadingQueue, Record, Source, SourceCursor,
-    SourceHealth, UserWorkState, Work, WorkIdentifier, WorkMergeAudit, WorkStatus,
+    AnalysisArtifact, ArchiveBackground, ArchiveRevision, ArchiveScope, ArchiveWork,
+    ConceptSet, ConceptTerm, DiscoveryEvent, IdentityEdge, MonitorRun,
+    MonitorSubscription, PendingIdentifierRelation, ReadingQueue, Record,
+    SearchStrategy, Source, SourceCursor, SourceHealth, TopicArchive, UserWorkState,
+    Work, WorkIdentifier, WorkMergeAudit, WorkStatus,
 )
 from ..adapters.crossref import CrossrefAdapter
 from ..adapters.pubmed import PubMedAdapter
 from ..llm.client import create_llm_client
 from ..workflows.monitor import run_monitor_subscription
 from ..workflows.scheduler import MonitorScheduler
+from ..workflows.archive import (
+    execute_search_strategy, generate_search_strategy, record_archive_revision, split_lines,
+)
 
 WEB_ROOT = Path(__file__).parent
 templates = Jinja2Templates(directory=str(WEB_ROOT / "templates"))
@@ -106,6 +111,11 @@ def create_app(
     app.state.monitor_scheduler = scheduler
     app.state.scheduler_enabled = should_schedule
 
+    def visible_monitor_subscription_ids():
+        return select(MonitorSubscription.id).where(
+            MonitorSubscription.subscription_type != "archive_search"
+        )
+
     async def work_view(work: Work, session, discovery: DiscoveryEvent | None = None) -> dict:
         preferred = await session.get(Record, work.preferred_record_id) if work.preferred_record_id else None
         if preferred is None:
@@ -132,7 +142,9 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
         async with database.get_session() as session:
-            events = (await session.execute(select(DiscoveryEvent))).scalars().all()
+            events = (await session.execute(select(DiscoveryEvent).where(
+                DiscoveryEvent.subscription_id.in_(visible_monitor_subscription_ids())
+            ))).scalars().all()
             discovered_work_ids = {event.work_id for event in events if event.work_id is not None}
             works = [
                 work for work_id in discovered_work_ids
@@ -163,7 +175,10 @@ def create_app(
         has_more: int | None = None,
     ):
         async with database.get_session() as session:
-            event_stmt = select(DiscoveryEvent).where(DiscoveryEvent.work_id.is_not(None))
+            event_stmt = select(DiscoveryEvent).where(
+                DiscoveryEvent.work_id.is_not(None),
+                DiscoveryEvent.subscription_id.in_(visible_monitor_subscription_ids()),
+            )
             now = datetime.utcnow()
             week_start = (now - timedelta(days=now.weekday())).replace(
                 hour=0, minute=0, second=0, microsecond=0
@@ -194,6 +209,7 @@ def create_app(
                     cards.append(await work_view(work, session, event))
             weekly_events = (await session.execute(select(DiscoveryEvent).where(
                 DiscoveryEvent.work_id.is_not(None),
+                DiscoveryEvent.subscription_id.in_(visible_monitor_subscription_ids()),
                 DiscoveryEvent.discovered_at >= week_start,
                 DiscoveryEvent.discovered_at < week_end,
             ).order_by(DiscoveryEvent.discovered_at.desc()))).scalars().all()
@@ -222,7 +238,9 @@ def create_app(
             elif state:
                 cards = [card for card in cards if card["state"] and card["state"].state == state]
             subscriptions = (await session.execute(
-                select(MonitorSubscription).order_by(MonitorSubscription.created_at)
+                select(MonitorSubscription).where(
+                    MonitorSubscription.subscription_type != "archive_search"
+                ).order_by(MonitorSubscription.created_at)
             )).scalars().all()
             sources = {source.id: source for source in (await session.execute(select(Source))).scalars().all()}
             health = {item.source_id: item for item in (await session.execute(select(SourceHealth))).scalars().all()}
@@ -278,14 +296,259 @@ def create_app(
             })
 
     @app.get("/archives", response_class=HTMLResponse)
-    async def archives(request: Request):
-        # UI-0 intentionally has no archive persistence model yet.  This page
-        # makes the future product surface visible without inventing one.
-        return templates.TemplateResponse(request, "archives.html", {"archives": []})
+    async def archives(request: Request, notice: str | None = None):
+        async with database.get_session() as session:
+            items = (await session.execute(select(TopicArchive).order_by(
+                TopicArchive.updated_at.desc()
+            ))).scalars().all()
+            counts = {
+                archive.id: (await session.execute(select(func.count(ArchiveWork.id)).where(
+                    ArchiveWork.archive_id == archive.id
+                ))).scalar_one()
+                for archive in items
+            }
+            return templates.TemplateResponse(request, "archives.html", {
+                "archives": items, "counts": counts, "notice": notice,
+            })
 
     @app.get("/archives/structure", response_class=HTMLResponse)
     async def archive_structure(request: Request):
-        return templates.TemplateResponse(request, "archive_detail.html", {})
+        return RedirectResponse(url="/archives", status_code=307)
+
+    @app.post("/archives")
+    async def create_archive(
+        title: str = Form(...), description: str = Form(""),
+    ):
+        title = title.strip()
+        if not title:
+            raise HTTPException(422, "专题名称不能为空")
+        async with database.get_session() as session:
+            if (await session.execute(select(TopicArchive).where(
+                TopicArchive.title == title
+            ))).scalar_one_or_none():
+                raise HTTPException(409, "同名专题档案已存在")
+            archive = TopicArchive(title=title, description=description.strip())
+            session.add(archive)
+            await session.flush()
+            await record_archive_revision(
+                session, archive, "CREATE", "创建专题档案",
+                {"title": title, "description": description.strip()},
+            )
+            await session.commit()
+            archive_id = archive.id
+        return RedirectResponse(url=f"/archives/{archive_id}?notice=created", status_code=303)
+
+    async def archive_context(session, archive: TopicArchive) -> dict:
+        scopes = (await session.execute(select(ArchiveScope).where(
+            ArchiveScope.archive_id == archive.id
+        ).order_by(ArchiveScope.version.desc()))).scalars().all()
+        backgrounds = (await session.execute(select(ArchiveBackground).where(
+            ArchiveBackground.archive_id == archive.id
+        ).order_by(ArchiveBackground.created_at.desc()))).scalars().all()
+        concept_sets = (await session.execute(select(ConceptSet).where(
+            ConceptSet.archive_id == archive.id
+        ).order_by(ConceptSet.id))).scalars().all()
+        terms = {
+            item.id: (await session.execute(select(ConceptTerm).where(
+                ConceptTerm.concept_set_id == item.id
+            ).order_by(ConceptTerm.id))).scalars().all()
+            for item in concept_sets
+        }
+        strategies = (await session.execute(select(SearchStrategy).where(
+            SearchStrategy.archive_id == archive.id
+        ).order_by(SearchStrategy.version.desc()))).scalars().all()
+        memberships = (await session.execute(select(ArchiveWork).where(
+            ArchiveWork.archive_id == archive.id
+        ).order_by(ArchiveWork.added_at.desc()))).scalars().all()
+        cards = []
+        for membership in memberships:
+            work = await session.get(Work, membership.work_id)
+            if work and work.status == WorkStatus.ACTIVE.value:
+                card = await work_view(work, session)
+                card["membership"] = membership
+                cards.append(card)
+        cards.sort(key=lambda card: (
+            card["record"].publication_date if card["record"] and card["record"].publication_date
+            else datetime.min
+        ), reverse=True)
+        revisions = (await session.execute(select(ArchiveRevision).where(
+            ArchiveRevision.archive_id == archive.id
+        ).order_by(ArchiveRevision.version.desc()))).scalars().all()
+        return {
+            "archive": archive, "scopes": scopes, "scope": scopes[0] if scopes else None,
+            "backgrounds": backgrounds, "concept_sets": concept_sets, "terms": terms,
+            "strategies": strategies, "strategy": strategies[0] if strategies else None,
+            "cards": cards, "revisions": revisions,
+        }
+
+    @app.get("/archives/{archive_id}", response_class=HTMLResponse)
+    async def archive_detail(
+        request: Request, archive_id: int, notice: str | None = None,
+        discovered: int | None = None, added: int | None = None,
+    ):
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            if archive is None:
+                raise HTTPException(404, "专题档案不存在")
+            context = await archive_context(session, archive)
+            return templates.TemplateResponse(request, "archive_detail.html", {
+                **context, "notice": notice, "search_discovered": discovered,
+                "search_added": added,
+            })
+
+    @app.post("/archives/{archive_id}/scope")
+    async def save_archive_scope(
+        archive_id: int,
+        core_concepts: str = Form(...),
+        background_concepts: str = Form(""),
+        exclusions: str = Form(""),
+        notes: str = Form(""),
+    ):
+        core = split_lines(core_concepts)
+        if not core:
+            raise HTTPException(422, "Scope 至少需要一个核心概念")
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            if archive is None:
+                raise HTTPException(404, "专题档案不存在")
+            version = (await session.execute(select(func.max(ArchiveScope.version)).where(
+                ArchiveScope.archive_id == archive.id
+            ))).scalar_one() or 0
+            scope = ArchiveScope(
+                archive_id=archive.id, version=version + 1,
+                core_concepts=core,
+                background_concepts=split_lines(background_concepts),
+                exclusions=split_lines(exclusions), notes=notes.strip(),
+            )
+            session.add(scope)
+            await record_archive_revision(
+                session, archive, "SCOPE", f"保存 Scope v{scope.version}",
+                {"scope_version": scope.version, "core": core,
+                 "background": scope.background_concepts, "exclude": scope.exclusions},
+            )
+            await session.commit()
+        return RedirectResponse(url=f"/archives/{archive_id}?notice=scope-saved", status_code=303)
+
+    @app.post("/archives/{archive_id}/background")
+    async def add_archive_background(
+        archive_id: int, title: str = Form(...), content: str = Form(...),
+        source_url: str = Form(""),
+    ):
+        if not title.strip() or not content.strip():
+            raise HTTPException(422, "Background 标题和内容不能为空")
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            if archive is None:
+                raise HTTPException(404, "专题档案不存在")
+            background = ArchiveBackground(
+                archive_id=archive.id, title=title.strip(), content=content.strip(),
+                source_url=source_url.strip() or None,
+            )
+            session.add(background)
+            await session.flush()
+            await record_archive_revision(
+                session, archive, "BACKGROUND", f"挂接 Background：{background.title}",
+                {"background_id": background.id, "title": background.title},
+            )
+            await session.commit()
+        return RedirectResponse(url=f"/archives/{archive_id}?notice=background-added", status_code=303)
+
+    @app.post("/archives/{archive_id}/concept-sets")
+    async def add_concept_set(
+        archive_id: int, name: str = Form(...), terms_text: str = Form(...),
+        description: str = Form(""), source: str = Form("manual"),
+    ):
+        if source not in {"manual", "mesh", "llm"}:
+            raise HTTPException(422, "不支持的术语来源")
+        parsed_terms = []
+        for raw in terms_text.splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            status = "ambiguous" if raw.startswith("?") else "exclude" if raw.startswith("-") else "include"
+            term = raw[1:].strip() if raw[:1] in {"+", "?", "-"} else raw
+            if term:
+                parsed_terms.append((term, status))
+        if not name.strip() or not parsed_terms:
+            raise HTTPException(422, "Concept Set 需要名称和至少一个术语")
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            if archive is None:
+                raise HTTPException(404, "专题档案不存在")
+            if (await session.execute(select(ConceptSet).where(
+                ConceptSet.archive_id == archive.id, ConceptSet.name == name.strip()
+            ))).scalar_one_or_none():
+                raise HTTPException(409, "同名 Concept Set 已存在")
+            concept_set = ConceptSet(
+                archive_id=archive.id, name=name.strip(), description=description.strip(),
+            )
+            session.add(concept_set)
+            await session.flush()
+            for term, status in parsed_terms:
+                session.add(ConceptTerm(
+                    concept_set_id=concept_set.id, term=term, status=status, source=source,
+                ))
+            await record_archive_revision(
+                session, archive, "LEXICON", f"新增 Concept Set：{concept_set.name}",
+                {"concept_set_id": concept_set.id, "terms": parsed_terms},
+            )
+            await session.commit()
+        return RedirectResponse(url=f"/archives/{archive_id}?notice=concept-added", status_code=303)
+
+    @app.post("/archives/{archive_id}/search-strategies")
+    async def build_search_strategy(archive_id: int):
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            if archive is None:
+                raise HTTPException(404, "专题档案不存在")
+            try:
+                await generate_search_strategy(session, archive)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            await session.commit()
+        return RedirectResponse(url=f"/archives/{archive_id}?notice=strategy-generated", status_code=303)
+
+    @app.post("/archives/{archive_id}/terms/{term_id}/status")
+    async def update_concept_term_status(
+        archive_id: int, term_id: int, status: str = Form(...),
+    ):
+        if status not in {"include", "ambiguous", "exclude"}:
+            raise HTTPException(422, "术语状态不受支持")
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            term = await session.get(ConceptTerm, term_id)
+            concept_set = await session.get(ConceptSet, term.concept_set_id) if term else None
+            if archive is None or term is None or concept_set is None or concept_set.archive_id != archive.id:
+                raise HTTPException(404, "Concept Term 不存在")
+            term.status = status
+            await record_archive_revision(
+                session, archive, "LEXICON", f"更新术语状态：{term.term} → {status}",
+                {"term_id": term.id, "term": term.term, "status": status},
+            )
+            await session.commit()
+        return RedirectResponse(url=f"/archives/{archive_id}?notice=term-updated", status_code=303)
+
+    @app.post("/archives/{archive_id}/search-strategies/{strategy_id}/execute")
+    async def execute_archive_search(archive_id: int, strategy_id: int):
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            strategy = await session.get(SearchStrategy, strategy_id)
+            if archive is None or strategy is None or strategy.archive_id != archive.id:
+                raise HTTPException(404, "Search Strategy 不存在")
+            try:
+                result = await execute_search_strategy(
+                    session, archive, strategy, make_pubmed, max_results_per_query=50,
+                )
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except RuntimeError as exc:
+                await session.rollback()
+                raise HTTPException(502, str(exc)) from exc
+            await session.commit()
+        return RedirectResponse(url=(
+            f"/archives/{archive_id}?notice=search-completed"
+            f"&discovered={result['discovered']}&added={result['added']}"
+        ), status_code=303)
 
     @app.post("/works/{work_id}/user-state")
     async def set_user_state(work_id: int, state: str = Form(...)):
@@ -423,7 +686,10 @@ def create_app(
     async def api_inbox():
         async with database.get_session() as session:
             events = (await session.execute(
-                select(DiscoveryEvent).where(DiscoveryEvent.work_id.is_not(None)).order_by(
+                select(DiscoveryEvent).where(
+                    DiscoveryEvent.work_id.is_not(None),
+                    DiscoveryEvent.subscription_id.in_(visible_monitor_subscription_ids()),
+                ).order_by(
                     DiscoveryEvent.discovered_at.desc()
                 )
             )).scalars().all()

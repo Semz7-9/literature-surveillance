@@ -101,6 +101,25 @@ uvicorn src.web.app:app --reload
 
 将 `config.yaml` 中的 `monitor.enabled` 设为 `true` 后，应用内调度器会按每个订阅的频率自动运行；无需打开页面或点击检查，但运行 `uvicorn` 的进程需要保持在线。系统会把新发现送入现有的 Work identity、Snapshot 和 L1 流程。PubMed 会补充 Abstract 与 MeSH；没有配置 LLM API key 时仍会完成发现和 L0/E1 入库，但不会生成新的 L1 卡片。“立即检查”保留用于首次配置和排障。
 
+## Topic Archive v0.1
+
+“专题档案”支持完整的本地纵向工作流：
+
+```text
+创建 Archive → 保存版本化 Scope → 挂接 Background
+→ 建立带状态和来源的 Concept Sets / Terms
+→ 生成版本化 PubMed Boolean Queries
+→ 执行真实检索 → Work Core 去重
+→ Archive Corpus → 基本 Timeline → Revision Log
+```
+
+Archive Search 使用隐藏的一次性订阅复用现有 ingestion/identity 核心，但不会混入
+普通 Monitor Inbox。可运行隔离的真实 PubMed 验收：
+
+```bash
+python scripts/accept_archive_v01.py --database data/archive_acceptance.db --reset
+```
+
 ## Monitor 时间压缩验收
 
 不用真实等待一周，可以将历史 API 数据按虚拟日期逐日回放：

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
-    IdentityEdge, IdentityEvidenceType, IdentityStatus, PendingIdentifierRelation,
+    ArchiveWork, IdentityEdge, IdentityEvidenceType, IdentityStatus, PendingIdentifierRelation,
     DiscoveryEvent, PendingRelationStatus, ReadingQueue, Record, UserWorkState,
     Work, WorkIdentifier, WorkMergeAudit, WorkStatus, normalize_doi,
 )
@@ -260,6 +260,23 @@ class WorkIdentityResolver:
                 await self.session.delete(queue)
             else:
                 queue.work_id = keep.id
+
+        archive_memberships = (await self.session.execute(select(ArchiveWork).where(
+            ArchiveWork.work_id == merge.id
+        ))).scalars().all()
+        for membership in archive_memberships:
+            existing = (await self.session.execute(select(ArchiveWork).where(
+                ArchiveWork.archive_id == membership.archive_id,
+                ArchiveWork.work_id == keep.id,
+            ))).scalar_one_or_none()
+            if existing:
+                existing.matched_queries = list(dict.fromkeys([
+                    *(existing.matched_queries or []), *(membership.matched_queries or []),
+                ]))
+                existing.added_at = min(existing.added_at, membership.added_at)
+                await self.session.delete(membership)
+            else:
+                membership.work_id = keep.id
         await self.session.flush()
 
     async def _reconcile_identity_state_after_merge(self, keep: Work) -> None:

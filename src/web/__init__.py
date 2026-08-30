@@ -1,1 +1,1 @@
-"""UI-0 web application."""
+"""Local application UI."""
