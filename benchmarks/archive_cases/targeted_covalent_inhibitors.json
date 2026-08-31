@@ -1,0 +1,22 @@
+{
+  "case_id": "targeted_covalent_inhibitors_v1",
+  "topic": "Targeted Covalent Inhibitor Design",
+  "optional_focus": "",
+  "expected_terms": [
+    "targeted covalent inhibitor",
+    "warhead",
+    "affinity labeling"
+  ],
+  "expected_background_nodes": [
+    "Electrophile–Nucleophile Chemistry",
+    "Reaction Kinetics",
+    "Structure–Activity Relationships"
+  ],
+  "expected_source_targets": [
+    "pubmed",
+    "openalex",
+    "semantic_scholar"
+  ],
+  "max_pending_review_items": 5,
+  "notes": "Planning-only benchmark. Landmark works and communities are intentionally deferred to Batch B."
+}

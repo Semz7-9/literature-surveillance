@@ -43,12 +43,12 @@ def test_topic_only_build_persists_shared_background_and_operator_thought(tmp_pa
             },
         )
         assert response.status_code == 200
-        assert "档案初稿已建立" in response.text
+        assert "Archive Planning 已完成" in response.text
         assert "Electrophile–Nucleophile Chemistry" in response.text
         assert "Reaction Kinetics" in response.text
         assert "Structure–Activity Relationships" in response.text
         assert "是否把“Chemoproteomics”纳入背景" in response.text
-        assert "LEXICON" in response.text
+        assert "SEARCHING" in response.text
         assert "Advanced / Expert Mode" in response.text
 
         note = "亲核/亲电更像一种反应叙事参照系。"
@@ -64,7 +64,7 @@ def test_topic_only_build_persists_shared_background_and_operator_thought(tmp_pa
         assert note in saved.text
 
         listing = client.get("/archives")
-        assert "PAUSED" in listing.text and "LEXICON" in listing.text
+        assert "PAUSED" in listing.text and "SEARCHING" in listing.text
 
     # A completely new app instance proves close/reopen recovery from SQLite.
     reopened = create_app(database_path, scheduler_enabled=False)
@@ -73,7 +73,7 @@ def test_topic_only_build_persists_shared_background_and_operator_thought(tmp_pa
         assert page.status_code == 200
         assert "Targeted Covalent Inhibitor Design" in page.text
         assert "亲核/亲电更像一种反应叙事参照系。" in page.text
-        assert "3 attached" in page.text
+        assert "3 nodes" in page.text
         # A second Archive reuses the same library rows instead of copying text.
         client.post("/archives", data={"title": "Reversible Covalent Inhibitors"})
 
@@ -93,7 +93,7 @@ def test_topic_only_build_persists_shared_background_and_operator_thought(tmp_pa
                     select(ArchiveBuildRun).where(ArchiveBuildRun.archive_id == first.id)
                 )
             ).scalar_one()
-            assert run.state == "LEXICON" and run.status == "PAUSED"
+            assert run.state == "SEARCHING" and run.status == "PAUSED"
             steps = (
                 (
                     await session.execute(
@@ -108,7 +108,7 @@ def test_topic_only_build_persists_shared_background_and_operator_thought(tmp_pa
             assert [step.status for step in steps] == [
                 "COMPLETED",
                 "COMPLETED",
-                "PENDING",
+                "COMPLETED",
                 "PENDING",
                 "PENDING",
             ]

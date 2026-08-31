@@ -81,31 +81,29 @@ def main() -> None:
     args = parse_args()
     if args.reset and args.database.exists():
         args.database.unlink()
-    app = create_app(args.database, scheduler_enabled=False)
+
+    app = create_app(args.database, scheduler_enabled=False, archive_ai_enabled=False)
     with TestClient(app) as client:
         response = client.post(
             "/archives",
-            data={
-                "title": "Targeted Covalent Inhibitor Design",
-            },
+            data={"title": "Targeted Covalent Inhibitor Design"},
         )
         assert response.status_code == 200
-        assert "档案初稿已建立" in response.text
-        assert "Electrophile–Nucleophile Chemistry" in response.text
-        assert "是否把“Chemoproteomics”纳入背景" in response.text
+        assert "Archive Planning" in response.text
+        assert "SEARCHING" in response.text
 
     # Recreate the complete app to exercise durable close/reopen behavior.
-    reopened = create_app(args.database, scheduler_enabled=False)
+    reopened = create_app(args.database, scheduler_enabled=False, archive_ai_enabled=False)
     with TestClient(reopened) as client:
         response = client.get("/archives/1")
-        assert response.status_code == 200 and "LEXICON" in response.text
+        assert response.status_code == 200 and "SEARCHING" in response.text
         result = asyncio.run(metrics(reopened))
 
-    assert result["run"].status == "PAUSED" and result["run"].state == "LEXICON"
+    assert result["run"].status == "PAUSED" and result["run"].state == "SEARCHING"
     assert [step.status for step in result["steps"]] == [
         "COMPLETED",
         "COMPLETED",
-        "PENDING",
+        "COMPLETED",
         "PENDING",
         "PENDING",
     ]

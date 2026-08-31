@@ -119,14 +119,34 @@ Topic + optional focus
 → operator review
 ```
 
-本批明确停在 `LEXICON`，Automatic Scope + Lexicon + Query 属于下一批。固定验收：
+Foundation 已由 Batch A · Archive Planning 接续：系统现在生成结构化 ScopeDraft、
+provider-neutral SearchPlan 与最多 5 个高影响 ReviewItem，然后明确停在 `SEARCHING`
+等待 Batch B。机器建议与人工决定分别保存，模型调用只在 Audit Ledger 中保存 hash 和
+运行元数据，不保存 API key 或全文。
+
+```text
+Operator Context + Shared Background
+→ ScopeDraft → Semantic SearchPlan → AIProposal
+→ exception-driven ReviewItem → HumanDecision (separate, append-only)
+→ PAUSED / SEARCHING
+```
+
+固定 Planning benchmark 验收：
+
+```bash
+python scripts/accept_archive_planning.py \
+  --database data/archive_planning_acceptance.db --reset
+```
+
+Foundation 验收仍可独立运行：
 
 ```bash
 python scripts/accept_archive_automation_foundation.py \
   --database data/archive_automation_acceptance.db --reset
 ```
 
-详细边界见 `docs/ARCHIVE_AUTOMATION_FOUNDATION.md`。
+详细边界见 `docs/ARCHIVE_PLANNING.md` 和
+`docs/ARCHIVE_AUTOMATION_FOUNDATION.md`。
 
 ## Topic Archive v0.1（Expert Mode）
 

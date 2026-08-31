@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}研究者背景{% endblock %}
+{% block content %}
+<section class="hero operator-hero"><div><p class="kicker">Operator Context</p><h1>让系统理解你的研究视角</h1><p class="lead">这是跨专题复用的研究者上下文，不是某篇论文的备注。每次保存产生新版本，已经建立的 Archive 继续引用当时版本。</p></div><div class="operator-version"><strong>v{{ profile.version }}</strong><span>{{ profile.name }}</span></div></section>
+{% if notice == 'profile-saved' %}<p class="notice">Operator Profile 新版本已保存；新建档案将使用它。</p>{% elif notice == 'lens-added' %}<p class="notice">Reusable Operator Lens 已加入当前 Profile。</p>{% endif %}
+<section><div class="section-heading"><div><p class="kicker">Researcher Profile</p><h2>可复用研究背景</h2></div><span class="count">Immutable v{{ profile.version }}</span></div>
+<form method="post" action="/operator" class="operator-profile-form">
+  <label>显示名称<input name="name" value="{{ profile.name }}"></label>
+  <label>研究兴趣（每行一个）<textarea name="research_interests">{{ profile.research_interests|join('\n') }}</textarea></label>
+  <label>当前项目（每行一个）<textarea name="active_projects">{{ profile.active_projects|join('\n') }}</textarea></label>
+  <label>概念偏好（每行一个）<textarea name="conceptual_preferences">{{ profile.conceptual_preferences|join('\n') }}</textarea></label>
+  <label>方法论原则（每行一个）<textarea name="methodological_principles">{{ profile.methodological_principles|join('\n') }}</textarea></label>
+  <label>术语偏好（每行一个）<textarea name="terminology_preferences">{{ profile.terminology_preferences|join('\n') }}</textarea></label>
+  <label class="wide">笔记约定<textarea name="note_conventions">{{ profile.note_conventions }}</textarea></label>
+  <button>保存为 Profile v{{ profile.version + 1 }}</button>
+</form></section>
+<section><div class="section-heading"><div><p class="kicker">Reusable Lenses</p><h2>操作者视角</h2></div><span class="count">{{ lenses|length }}</span></div>
+<div class="lens-grid">{% for lens in lenses %}<article><span>{{ lens.lens_type }}</span><h3>{{ lens.title }}</h3><p>{{ lens.content }}</p></article>{% else %}<p class="muted">尚无 Lens。它适合保存跨专题反复使用的概念视角、方法原则或启发式。</p>{% endfor %}</div>
+<details><summary>＋ 新建 Lens</summary><form method="post" action="/operator/lenses" class="operator-lens-form"><label>标题<input name="title" required></label><label>类型<select name="lens_type"><option>CONCEPTUAL</option><option>METHODOLOGICAL</option><option>TERMINOLOGY</option><option>HEURISTIC</option></select></label><label class="wide">原始内容<textarea name="content" required></textarea></label><button>保存 Lens</button></form></details></section>
+{% endblock %}

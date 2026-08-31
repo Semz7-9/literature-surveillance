@@ -29,7 +29,8 @@ Topic + optional focus
 - error。
 
 失败步骤以新 attempt 重试，已完成步骤不会重复执行。本批完成 SCOPING 与 BACKGROUND
-后明确以 `PAUSED / LEXICON` 保存，不伪装成完整 Archive 已 READY。
+Foundation 本身在 BACKGROUND 后可恢复；当前产品已由 Batch A 接续执行 LEXICON
+规划步骤，并以 `PAUSED / SEARCHING` 保存，不伪装成完整 Archive 已 READY。
 
 ## Shared Background Library
 
@@ -59,8 +60,8 @@ AI workflow 只请求 `SOURCE_SYNTHESIS`、`REASONING`、`CRITIQUE` role，供�
 输入仅为 `Targeted Covalent Inhibitor Design`。验收检查：
 
 - provisional Scope 已保存；
-- BuildRun 停在可恢复的 `PAUSED / LEXICON`；
-- SCOPING、BACKGROUND 完成，其余步骤保持 PENDING；
+- BuildRun 最终停在可恢复的 `PAUSED / SEARCHING`；
+- SCOPING、BACKGROUND、LEXICON 完成，SEARCHING/ASSEMBLING 保持 PENDING；
 - 三个高置信 BackgroundNode 自动挂接；
 - Chemoproteomics 作为中置信问题进入 Review Queue；
 - Profile / Node 是共享对象而非 Archive 正文副本；

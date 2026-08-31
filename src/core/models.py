@@ -11,16 +11,17 @@
 from datetime import datetime
 from enum import Enum
 from typing import Optional
+
 from sqlalchemy import (
-    String,
-    Integer,
-    Float,
-    DateTime,
-    Text,
-    Boolean,
-    ForeignKey,
     JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
     Index,
+    Integer,
+    String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -40,7 +41,7 @@ def normalize_doi(raw: str) -> str:
     doi = raw.strip()
     for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
         if doi.lower().startswith(prefix):
-            doi = doi[len(prefix):]
+            doi = doi[len(prefix) :]
             break
     return doi.strip().lower()
 
@@ -193,9 +194,7 @@ class Record(Base):
     # publication_date 是 raw_date_parts 按 precision 补全后的派生值，仅用于排序/展示，
     # 不能反过来当作"我们确切知道这一天发表"的证据
     publication_date: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    publication_date_precision: Mapped[Optional[str]] = mapped_column(
-        String(8)
-    )  # day, month, year
+    publication_date_precision: Mapped[Optional[str]] = mapped_column(String(8))  # day, month, year
     raw_date_parts: Mapped[Optional[list]] = mapped_column(JSON)  # Crossref date-parts 原样保留
     doi: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True)
 
@@ -311,6 +310,7 @@ class SourceSnapshot(Base):
     raw_abstract 或可变的 Record.abstract，否则标签会导致 "证据在原文
     里找不到" 的伪失败，而且证据锚点会在 Record 被重新抓取覆盖后失效。
     """
+
     __tablename__ = "source_snapshots"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -379,15 +379,14 @@ class AnalysisArtifact(Base):
     supersedes_id 指向被取代的上一个 artifact，用于同一 record 重新
     生成（重试/模型升级/摘要更新）时保留历史而不是产生 UNIQUE 冲突。
     """
+
     __tablename__ = "analysis_artifacts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     artifact_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
 
     record_id: Mapped[int] = mapped_column(ForeignKey("records.id"), index=True)
-    snapshot_id: Mapped[int] = mapped_column(
-        ForeignKey("source_snapshots.id"), index=True
-    )
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("source_snapshots.id"), index=True)
 
     analysis_type: Mapped[str] = mapped_column(String(32), index=True)  # "L1", "L2", etc.
     skill_version: Mapped[str] = mapped_column(String(32))
@@ -585,9 +584,7 @@ class DiscoveryEvent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), index=True)
-    subscription_id: Mapped[int] = mapped_column(
-        ForeignKey("monitor_subscriptions.id"), index=True
-    )
+    subscription_id: Mapped[int] = mapped_column(ForeignKey("monitor_subscriptions.id"), index=True)
     external_identifier: Mapped[str] = mapped_column(String(255), index=True)
     work_id: Mapped[Optional[int]] = mapped_column(ForeignKey("works.id"), index=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -610,9 +607,7 @@ class MonitorRun(Base):
     __tablename__ = "monitor_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    subscription_id: Mapped[int] = mapped_column(
-        ForeignKey("monitor_subscriptions.id"), index=True
-    )
+    subscription_id: Mapped[int] = mapped_column(ForeignKey("monitor_subscriptions.id"), index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     window_from: Mapped[Optional[datetime]] = mapped_column(DateTime)
@@ -702,9 +697,7 @@ class ArchiveScope(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (
-        UniqueConstraint("archive_id", "version", name="uq_archive_scope_version"),
-    )
+    __table_args__ = (UniqueConstraint("archive_id", "version", name="uq_archive_scope_version"),)
 
 
 class ArchiveBackground(Base):
@@ -731,9 +724,7 @@ class ConceptSet(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (
-        UniqueConstraint("archive_id", "name", name="uq_archive_concept_set_name"),
-    )
+    __table_args__ = (UniqueConstraint("archive_id", "name", name="uq_archive_concept_set_name"),)
 
 
 class ConceptTerm(Base):
@@ -748,9 +739,7 @@ class ConceptTerm(Base):
     source: Mapped[str] = mapped_column(String(32), default="manual")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (
-        UniqueConstraint("concept_set_id", "term", name="uq_concept_set_term"),
-    )
+    __table_args__ = (UniqueConstraint("concept_set_id", "term", name="uq_concept_set_term"),)
 
 
 class SearchStrategy(Base):
@@ -783,9 +772,7 @@ class ArchiveWork(Base):
     matched_queries: Mapped[list[str]] = mapped_column(JSON, default=list)
     added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (
-        UniqueConstraint("archive_id", "work_id", name="uq_archive_work_membership"),
-    )
+    __table_args__ = (UniqueConstraint("archive_id", "work_id", name="uq_archive_work_membership"),)
 
 
 class ArchiveRevision(Base):
@@ -908,9 +895,7 @@ class ArchiveBackgroundLink(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
-    __table_args__ = (
-        UniqueConstraint("archive_id", "node_id", name="uq_archive_background_node"),
-    )
+    __table_args__ = (UniqueConstraint("archive_id", "node_id", name="uq_archive_background_node"),)
 
 
 class BackgroundOperatorContribution(Base):
@@ -952,4 +937,207 @@ class BackgroundSource(Base):
     title: Mapped[str] = mapped_column(String(500))
     url: Mapped[Optional[str]] = mapped_column(Text)
     citation: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ============================================================================
+# Archive Planning (Batch A)
+# ============================================================================
+
+
+class OperatorProfile(Base):
+    """Reusable researcher context, independent from any one Archive."""
+
+    __tablename__ = "operator_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    research_interests: Mapped[list[str]] = mapped_column(JSON, default=list)
+    active_projects: Mapped[list[str]] = mapped_column(JSON, default=list)
+    conceptual_preferences: Mapped[list[str]] = mapped_column(JSON, default=list)
+    methodological_principles: Mapped[list[str]] = mapped_column(JSON, default=list)
+    terminology_preferences: Mapped[list[str]] = mapped_column(JSON, default=list)
+    note_conventions: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("profile_key", "version", name="uq_operator_profile_version"),
+    )
+
+
+class OperatorLens(Base):
+    """Named, reusable operator perspective that can be applied to Archives."""
+
+    __tablename__ = "operator_lenses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("operator_profiles.id"), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    lens_type: Mapped[str] = mapped_column(String(32), default="CONCEPTUAL")
+    content: Mapped[str] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "title", "version", name="uq_operator_lens_version"),
+    )
+
+
+class ArchiveOperatorContext(Base):
+    """Snapshot-like selection of reusable operator context for one Archive."""
+
+    __tablename__ = "archive_operator_contexts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(
+        ForeignKey("topic_archives.id"), unique=True, index=True
+    )
+    profile_id: Mapped[int] = mapped_column(ForeignKey("operator_profiles.id"), index=True)
+    profile_version: Mapped[int] = mapped_column(Integer)
+    selected_lens_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    archive_context: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class ArchiveScopeDraft(Base):
+    """Structured machine proposal; not equivalent to an operator-approved ArchiveScope."""
+
+    __tablename__ = "archive_scope_drafts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    build_run_id: Mapped[int] = mapped_column(ForeignKey("archive_build_runs.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    core_scope: Mapped[str] = mapped_column(Text)
+    included_domains: Mapped[list[str]] = mapped_column(JSON, default=list)
+    excluded_domains: Mapped[list[str]] = mapped_column(JSON, default=list)
+    temporal_scope: Mapped[dict] = mapped_column(JSON, default=dict)
+    object_scope: Mapped[list[str]] = mapped_column(JSON, default=list)
+    method_scope: Mapped[list[str]] = mapped_column(JSON, default=list)
+    ambiguities: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    reasoning_summary: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="PROVISIONAL", index=True)
+    generated_by: Mapped[str] = mapped_column(String(16), default="SYSTEM")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "version", name="uq_archive_scope_draft_version"),
+    )
+
+
+class ArchiveSearchPlan(Base):
+    """Provider-neutral semantic plan compiled to database syntax only in Batch B."""
+
+    __tablename__ = "archive_search_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    build_run_id: Mapped[int] = mapped_column(ForeignKey("archive_build_runs.id"), index=True)
+    scope_draft_id: Mapped[int] = mapped_column(ForeignKey("archive_scope_drafts.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    concepts: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    historical_vocabulary: Mapped[list[str]] = mapped_column(JSON, default=list)
+    hard_exclusions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    soft_exclusions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_targets: Mapped[list[str]] = mapped_column(JSON, default=list)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="PROVISIONAL", index=True)
+    generated_by: Mapped[str] = mapped_column(String(16), default="SYSTEM")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "version", name="uq_archive_search_plan_version"),
+    )
+
+
+class GenerationRun(Base):
+    """Privacy-conscious audit ledger for one model or deterministic generation attempt."""
+
+    __tablename__ = "generation_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[Optional[int]] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    build_run_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("archive_build_runs.id"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(32), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_hash: Mapped[str] = mapped_column(String(64), index=True)
+    text_hash: Mapped[str] = mapped_column(String(64), index=True)
+    cache_key: Mapped[str] = mapped_column(String(128), index=True)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+    parse_status: Mapped[str] = mapped_column(String(16), default="PENDING")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    error_category: Mapped[Optional[str]] = mapped_column(String(64))
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    input_refs: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    output_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="RUNNING", index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+
+class AIProposal(Base):
+    """Machine suggestion whose lifecycle remains separate from operator decisions."""
+
+    __tablename__ = "ai_proposals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    build_run_id: Mapped[int] = mapped_column(ForeignKey("archive_build_runs.id"), index=True)
+    generation_run_id: Mapped[int] = mapped_column(ForeignKey("generation_runs.id"), index=True)
+    proposal_type: Mapped[str] = mapped_column(String(32), index=True)
+    target_type: Mapped[str] = mapped_column(String(32))
+    target_id: Mapped[Optional[int]] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    impact: Mapped[str] = mapped_column(String(16), default="LOW", index=True)
+    origin: Mapped[str] = mapped_column(String(16), default="AI")
+    status: Mapped[str] = mapped_column(String(24), default="PROPOSED", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ReviewItem(Base):
+    """Exception-driven question surfaced only when a proposal needs operator judgment."""
+
+    __tablename__ = "review_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    build_run_id: Mapped[int] = mapped_column(ForeignKey("archive_build_runs.id"), index=True)
+    proposal_id: Mapped[int] = mapped_column(ForeignKey("ai_proposals.id"), unique=True, index=True)
+    item_type: Mapped[str] = mapped_column(String(32), index=True)
+    question: Mapped[str] = mapped_column(Text)
+    options: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    impact: Mapped[str] = mapped_column(String(16), default="MEDIUM", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+
+class HumanDecision(Base):
+    """Append-only operator resolution; never overwrites the originating AIProposal."""
+
+    __tablename__ = "human_decisions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    review_item_id: Mapped[int] = mapped_column(ForeignKey("review_items.id"), index=True)
+    proposal_id: Mapped[int] = mapped_column(ForeignKey("ai_proposals.id"), index=True)
+    decision: Mapped[str] = mapped_column(String(32), index=True)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    reviewer_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

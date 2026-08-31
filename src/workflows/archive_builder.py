@@ -217,7 +217,9 @@ async def create_archive_build_run(
     return run
 
 
-async def _step(session: AsyncSession, run: ArchiveBuildRun, stage: str) -> ArchiveBuildStep:
+async def get_build_step(
+    session: AsyncSession, run: ArchiveBuildRun, stage: str
+) -> ArchiveBuildStep:
     latest = (
         await session.execute(
             select(ArchiveBuildStep)
@@ -254,7 +256,7 @@ async def run_archive_foundation(
     run.started_at = run.started_at or datetime.utcnow()
     run.error = None
 
-    scope_step = await _step(session, run, "SCOPING")
+    scope_step = await get_build_step(session, run, "SCOPING")
     if scope_step.status != "COMPLETED":
         run.state = "SCOPING"
         scope_step.status = "RUNNING"
@@ -303,7 +305,7 @@ async def run_archive_foundation(
     else:
         scope = await session.get(ArchiveScope, scope_step.output_artifact.get("scope_id"))
 
-    background_step = await _step(session, run, "BACKGROUND")
+    background_step = await get_build_step(session, run, "BACKGROUND")
     if background_step.status != "COMPLETED":
         run.state = "BACKGROUND"
         background_step.status = "RUNNING"
