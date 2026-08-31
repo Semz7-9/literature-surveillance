@@ -1,11 +1,24 @@
 {
-  "case_id": "targeted_covalent_inhibitors_v1",
+  "case_id": "targeted_covalent_inhibitors_v2",
   "topic": "Targeted Covalent Inhibitor Design",
   "optional_focus": "",
   "expected_terms": [
     "targeted covalent inhibitor",
     "warhead",
     "affinity labeling"
+  ],
+  "known_terminology": [
+    "targeted covalent inhibitor",
+    "covalent inhibitor",
+    "covalent drug",
+    "warhead",
+    "electrophile",
+    "target engagement",
+    "reaction kinetics",
+    "selectivity",
+    "irreversible inhibitor",
+    "affinity labeling",
+    "reversible covalent inhibitor"
   ],
   "expected_background_nodes": [
     "Electrophile–Nucleophile Chemistry",
@@ -18,5 +31,38 @@
     "semantic_scholar"
   ],
   "max_pending_review_items": 5,
-  "notes": "Planning-only benchmark. Landmark works and communities are intentionally deferred to Batch B."
+  "landmark_recall_target": 0.8,
+  "known_landmark_works": [
+    {"identifier_type": "doi", "id": "10.1002/anie.201601091", "title": "Targeted Covalent Inhibitors for Drug Design"},
+    {"identifier_type": "doi", "id": "10.1021/acs.jmedchem.1c02134", "title": "The Ascension of Targeted Covalent Inhibitors"},
+    {"identifier_type": "doi", "id": "10.1016/j.drudis.2015.05.005", "title": "Covalent inhibitors in drug discovery"},
+    {"identifier_type": "doi", "id": "10.1016/j.cbpa.2018.05.011", "title": "Beyond cysteine"},
+    {"identifier_type": "doi", "id": "10.1016/j.cbpa.2017.05.008", "title": "Covalent inhibitors: an opportunity for rational target selectivity"},
+    {"identifier_type": "doi", "id": "10.1016/j.tips.2020.10.005", "title": "Selective and Effective"},
+    {"identifier_type": "doi", "id": "10.1007/s00044-023-03065-3", "title": "An update on reversible covalent inhibitors"},
+    {"identifier_type": "doi", "id": "10.1021/acs.jmedchem.9b01709", "title": "Kinetic Optimization of Lysine-Targeting Covalent Inhibitors of HSP72"},
+    {"identifier_type": "doi", "id": "10.1039/c9cs00720b", "title": "Advances in covalent kinase inhibitors"},
+    {"identifier_type": "doi", "id": "10.1021/acschembio.3c00805", "title": "Reversible Covalent Inhibition"}
+  ],
+  "known_reviews": [
+    "10.1002/anie.201601091",
+    "10.1021/acs.jmedchem.1c02134",
+    "10.1016/j.drudis.2015.05.005",
+    "10.1016/j.cbpa.2018.05.011",
+    "10.1016/j.cbpa.2017.05.008",
+    "10.1016/j.tips.2020.10.005",
+    "10.1007/s00044-023-03065-3"
+  ],
+  "benchmark_sources": [
+    "https://pubmed.ncbi.nlm.nih.gov/27539547/",
+    "https://pubmed.ncbi.nlm.nih.gov/35439421/",
+    "https://pubmed.ncbi.nlm.nih.gov/26002380/",
+    "https://pubmed.ncbi.nlm.nih.gov/29857316/",
+    "https://pubmed.ncbi.nlm.nih.gov/28609675/",
+    "https://pubmed.ncbi.nlm.nih.gov/33153778/",
+    "https://pubmed.ncbi.nlm.nih.gov/37305209/",
+    "https://pubmed.ncbi.nlm.nih.gov/31725295/",
+    "https://pubmed.ncbi.nlm.nih.gov/38567529/"
+  ],
+  "notes": "Batch B1 ground truth: 10 DOI-identified landmarks, 7 reviews, and 11 known terms. Recall target is directional rather than a claim of corpus completeness."
 }

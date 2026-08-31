@@ -13,7 +13,7 @@ from .models import (
 )
 
 INTRA_WORK_RELATIONS = {"is-preprint-of", "has-preprint", "is-version-of", "has-version"}
-IDENTIFIER_KEYS = {"pmid", "pmcid", "arxiv_id", "biorxiv_id"}
+IDENTIFIER_KEYS = {"pmid", "pmcid", "arxiv_id", "biorxiv_id", "openalex_id"}
 
 
 class IdentifierConflictError(ValueError):
@@ -38,6 +38,16 @@ class WorkIdentityResolver:
             work = await self._find_work_by_identifier("doi", record.doi)
             if work:
                 return await self._create_identity_edge(record, work, IdentityEvidenceType.DOI_EXACT, 1.0, IdentityStatus.CONFIRMED, {"reason": "DOI already registered to this Work"})
+        for identifier_type, identifier_value in self._record_identifiers(record):
+            if identifier_type == "doi":
+                continue
+            work = await self._find_work_by_identifier(identifier_type, identifier_value)
+            if work:
+                return await self._create_identity_edge(
+                    record, work, IdentityEvidenceType.EXTERNAL_IDENTIFIER_EXACT,
+                    1.0, IdentityStatus.CONFIRMED,
+                    {"identifier_type": identifier_type, "identifier_value": identifier_value},
+                )
         edge = await self._fuzzy_match_work(record)
         return edge if edge else await self._create_new_work(record)
 

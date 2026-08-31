@@ -32,6 +32,7 @@ class PubMedAdapter:
         feed_mode: str = "created",
         cursor: str = "*",
         rows: int = 100,
+        sort: str = "pub date",
     ) -> tuple[list[dict], str | None]:
         """Return one stable PubMed result page including abstracts and MeSH terms."""
         del feed_mode
@@ -42,7 +43,7 @@ class PubMedAdapter:
         offset = 0 if cursor in {"", "*", None} else int(cursor)
         params = {
             **self._common_params(), "db": "pubmed", "retmode": "json",
-            "sort": "pub date", "term": term, "retstart": str(offset),
+            "sort": sort, "term": term, "retstart": str(offset),
             "retmax": str(min(rows, 200)),
         }
         response = await self._client.get(f"{self.BASE_URL}/esearch.fcgi", params=params)

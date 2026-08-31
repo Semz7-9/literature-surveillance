@@ -119,17 +119,29 @@ Topic + optional focus
 → operator review
 ```
 
-Foundation 已由 Batch A · Archive Planning 接续：系统现在生成结构化 ScopeDraft、
-provider-neutral SearchPlan 与最多 5 个高影响 ReviewItem，然后明确停在 `SEARCHING`
-等待 Batch B。机器建议与人工决定分别保存，模型调用只在 Audit Ledger 中保存 hash 和
-运行元数据，不保存 API key 或全文。
+Foundation 已由 Batch A · Archive Planning 和 Batch B1 · Archive Discovery 接续：系统先
+生成结构化 ScopeDraft、provider-neutral SearchPlan 与最多 5 个高影响 ReviewItem；人工
+决定随后投影为 EffectiveSearchPlan，由确定性 compiler 生成 PubMed / OpenAlex 查询，
+检索结果复用 Work Core 跨来源去重并自动形成 Archive Corpus。
 
 ```text
 Operator Context + Shared Background
 → ScopeDraft → Semantic SearchPlan → AIProposal
 → exception-driven ReviewItem → HumanDecision (separate, append-only)
-→ PAUSED / SEARCHING
+→ EffectiveSearchPlan → PubMed + OpenAlex
+→ RetrievalHit → Work Resolver → Archive Corpus
+→ PAUSED / DISCOVERY_COMPLETE
 ```
+
+真实 Discovery benchmark 验收（需要网络）：
+
+```bash
+python scripts/accept_archive_discovery.py --reset --max-results-per-query 50
+```
+
+当前固定结果为 PubMed 196 hits、OpenAlex 200 hits、去重后 290 Works，人工 ground truth
+landmark recall 为 `8/10 = 0.80`。不同日期的来源排序和索引可能令原始命中数波动，验收以
+landmark recall 下限和 canonical corpus 为准。
 
 固定 Planning benchmark 验收：
 
@@ -145,7 +157,7 @@ python scripts/accept_archive_automation_foundation.py \
   --database data/archive_automation_acceptance.db --reset
 ```
 
-详细边界见 `docs/ARCHIVE_PLANNING.md` 和
+详细边界见 `docs/ARCHIVE_PLANNING.md`、`docs/ARCHIVE_DISCOVERY.md` 和
 `docs/ARCHIVE_AUTOMATION_FOUNDATION.md`。
 
 ## Topic Archive v0.1（Expert Mode）

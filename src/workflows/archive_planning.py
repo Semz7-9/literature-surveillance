@@ -35,6 +35,7 @@ class ScopeAmbiguityOutput(BaseModel):
     question: str
     options: list[Literal["INCLUDE", "BACKGROUND_ONLY", "EXCLUDE"]]
     recommendation: Literal["INCLUDE", "BACKGROUND_ONLY", "EXCLUDE"]
+    terms: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0, le=1)
     impact: Literal["LOW", "MEDIUM", "HIGH"] = "MEDIUM"
 
@@ -171,6 +172,7 @@ class RuleBasedArchivePlanner:
                     question="是否将 reversible covalent inhibitors 纳入主体？",
                     options=["INCLUDE", "BACKGROUND_ONLY", "EXCLUDE"],
                     recommendation="INCLUDE",
+                    terms=["reversible covalent inhibitor"],
                     confidence=0.78,
                     impact="HIGH",
                 ),
@@ -178,6 +180,7 @@ class RuleBasedArchivePlanner:
                     question="Chemoproteomics 应作为主体研究分支还是背景方法？",
                     options=["INCLUDE", "BACKGROUND_ONLY", "EXCLUDE"],
                     recommendation="BACKGROUND_ONLY",
+                    terms=["chemoproteomics", "covalent ligand discovery"],
                     confidence=0.72,
                     impact="MEDIUM",
                 ),
@@ -185,6 +188,7 @@ class RuleBasedArchivePlanner:
                     question="是否纳入没有明确靶点的 reactive covalent compounds？",
                     options=["INCLUDE", "BACKGROUND_ONLY", "EXCLUDE"],
                     recommendation="EXCLUDE",
+                    terms=["reactive covalent compound"],
                     confidence=0.84,
                     impact="HIGH",
                 ),
@@ -212,6 +216,7 @@ class RuleBasedArchivePlanner:
                     question="Metabolomics 中的 chemical space 是否纳入主体？",
                     options=["INCLUDE", "BACKGROUND_ONLY", "EXCLUDE"],
                     recommendation="BACKGROUND_ONLY",
+                    terms=["metabolomics chemical space"],
                     confidence=0.7,
                     impact="MEDIUM",
                 )
@@ -271,7 +276,8 @@ class LLMArchivePlanner:
             "Produce a conservative provisional scope and a provider-neutral semantic search plan. "
             "Do not write PubMed/OpenAlex syntax. Distinguish hard exclusions from soft exclusions. "
             "Only include genuine high-impact ambiguities needing operator judgment, maximum five. "
-            "Recommendations must use INCLUDE, BACKGROUND_ONLY, or EXCLUDE."
+            "Recommendations must use INCLUDE, BACKGROUND_ONLY, or EXCLUDE. For each ambiguity, "
+            "provide the concrete search terms that the decision would add, background, or exclude."
         )
 
     async def plan(

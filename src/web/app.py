@@ -1,6 +1,7 @@
 """Local UI for Topic Archive and Literature Monitor product workflows."""
 
 import inspect
+import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
 from ..adapters.crossref import CrossrefAdapter
+from ..adapters.openalex import OpenAlexAdapter
 from ..adapters.pubmed import PubMedAdapter
 from ..core.config import load_config
 from ..core.database import Database
@@ -36,6 +38,7 @@ from ..core.models import (
     ConceptSet,
     ConceptTerm,
     DiscoveryEvent,
+    EffectiveSearchPlan,
     GenerationRun,
     HumanDecision,
     IdentityEdge,
@@ -46,6 +49,8 @@ from ..core.models import (
     PendingIdentifierRelation,
     ReadingQueue,
     Record,
+    RetrievalHit,
+    RetrievalRun,
     ReviewItem,
     SearchStrategy,
     Source,
@@ -68,6 +73,7 @@ from ..workflows.archive_builder import (
     add_operator_contribution,
     create_archive_build_run,
 )
+from ..workflows.archive_discovery import run_archive_discovery
 from ..workflows.archive_planning import (
     LLMArchivePlanner,
     RuleBasedArchivePlanner,
@@ -90,10 +96,22 @@ def default_database_path() -> Path:
     )
 
 
+def benchmark_landmarks(topic: str) -> list[dict]:
+    benchmark_root = Path("benchmarks/archive_cases")
+    if not benchmark_root.exists():
+        return []
+    for path in benchmark_root.glob("*.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("topic", "").casefold() == topic.casefold():
+            return payload.get("known_landmark_works", [])
+    return []
+
+
 def create_app(
     database_path: str | Path | None = None,
     crossref_factory: Callable[[], CrossrefAdapter] | None = None,
     pubmed_factory: Callable[[], PubMedAdapter] | None = None,
+    openalex_factory: Callable[[], OpenAlexAdapter] | None = None,
     llm_factory: Callable | None = None,
     archive_planner_factory: Callable | None = None,
     archive_ai_enabled: bool | None = None,
@@ -125,6 +143,13 @@ def create_app(
         timeout = runtime_config.pubmed.timeout if runtime_config else 30.0
         api_key = runtime_config.pubmed.api_key if runtime_config else None
         return PubMedAdapter(email=email, api_key=api_key, timeout=timeout)
+
+    def make_openalex() -> OpenAlexAdapter:
+        if openalex_factory:
+            return openalex_factory()
+        email = runtime_config.crossref.email if runtime_config else None
+        timeout = runtime_config.crossref.timeout if runtime_config else 30.0
+        return OpenAlexAdapter(email=email, timeout=timeout)
 
     def make_adapter(source: Source):
         if source.name == "pubmed":
@@ -940,6 +965,30 @@ def create_app(
             .scalars()
             .all()
         )
+        effective_plan = (
+            await session.execute(
+                select(EffectiveSearchPlan)
+                .where(EffectiveSearchPlan.archive_id == archive.id)
+                .order_by(EffectiveSearchPlan.version.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        retrieval_runs = list(
+            (
+                await session.execute(
+                    select(RetrievalRun)
+                    .where(RetrievalRun.archive_id == archive.id)
+                    .order_by(RetrievalRun.started_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        retrieval_hit_count = (
+            await session.execute(
+                select(func.count(RetrievalHit.id)).where(RetrievalHit.archive_id == archive.id)
+            )
+        ).scalar_one()
         return {
             "archive": archive,
             "scopes": scopes,
@@ -969,6 +1018,10 @@ def create_app(
             "operator_profile": operator_profile,
             "operator_lenses": operator_lenses,
             "generation_runs": generation_runs,
+            "effective_plan": effective_plan,
+            "retrieval_runs": retrieval_runs,
+            "retrieval_run": retrieval_runs[0] if retrieval_runs else None,
+            "retrieval_hit_count": retrieval_hit_count,
         }
 
     @app.get("/archives/{archive_id}", response_class=HTMLResponse)
@@ -1019,6 +1072,39 @@ def create_app(
             await run_archive_planning(session, archive, run, planner)
             await session.commit()
         notice = "build-failed" if run.status == "FAILED" else "build-resumed"
+        return RedirectResponse(url=f"/archives/{archive_id}?notice={notice}", status_code=303)
+
+    @app.post("/archives/{archive_id}/discover")
+    async def discover_archive(
+        archive_id: int,
+        max_results_per_query: int = Form(50),
+    ):
+        max_results_per_query = max(10, min(max_results_per_query, 200))
+        async with database.get_session() as session:
+            archive = await session.get(TopicArchive, archive_id)
+            if archive is None:
+                raise HTTPException(404, "专题档案不存在")
+            build_run = (
+                await session.execute(
+                    select(ArchiveBuildRun)
+                    .where(ArchiveBuildRun.archive_id == archive.id)
+                    .order_by(ArchiveBuildRun.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if build_run is None:
+                raise HTTPException(409, "请先完成 Archive Planning")
+            retrieval = await run_archive_discovery(
+                session,
+                archive,
+                build_run,
+                make_pubmed,
+                make_openalex,
+                max_results_per_query=max_results_per_query,
+                known_landmarks=benchmark_landmarks(archive.title),
+            )
+            await session.commit()
+        notice = "discovery-failed" if retrieval.status == "FAILED" else "discovery-completed"
         return RedirectResponse(url=f"/archives/{archive_id}?notice={notice}", status_code=303)
 
     @app.post("/archives/{archive_id}/background-links/{link_id}/decision")

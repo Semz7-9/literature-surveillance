@@ -100,6 +100,7 @@ class IdentityEvidenceType(str, Enum):
     """
 
     DOI_EXACT = "DOI_EXACT"
+    EXTERNAL_IDENTIFIER_EXACT = "EXTERNAL_IDENTIFIER_EXACT"
     EXPLICIT_CROSSREF_RELATION = "EXPLICIT_CROSSREF_RELATION"
     PUBLISHER_RELATION = "PUBLISHER_RELATION"
     EXACT_TITLE_FIRST_AUTHOR = "EXACT_TITLE_FIRST_AUTHOR"
@@ -1141,3 +1142,81 @@ class HumanDecision(Base):
     rationale: Mapped[str] = mapped_column(Text, default="")
     reviewer_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ============================================================================
+# Archive Discovery (Batch B1)
+# ============================================================================
+
+
+class EffectiveSearchPlan(Base):
+    """Resolved, executable projection of a semantic SearchPlan and human decisions."""
+
+    __tablename__ = "effective_search_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    base_plan_id: Mapped[int] = mapped_column(ForeignKey("archive_search_plans.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    concepts: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    historical_vocabulary: Mapped[list[str]] = mapped_column(JSON, default=list)
+    hard_exclusions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    soft_exclusions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    background_terms: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_targets: Mapped[list[str]] = mapped_column(JSON, default=list)
+    applied_decisions: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    compiled_queries: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "version", name="uq_effective_search_plan_version"),
+    )
+
+
+class RetrievalRun(Base):
+    """One bounded PubMed + OpenAlex retrieval attempt for an effective plan."""
+
+    __tablename__ = "retrieval_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    effective_plan_id: Mapped[int] = mapped_column(
+        ForeignKey("effective_search_plans.id"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(24), default="RUNNING", index=True)
+    source_metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    query_coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+    unique_work_count: Mapped[int] = mapped_column(Integer, default=0)
+    landmark_recall: Mapped[Optional[float]] = mapped_column(Float)
+    landmark_found: Mapped[list[str]] = mapped_column(JSON, default=list)
+    landmark_total: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+
+class RetrievalHit(Base):
+    """Thin source observation linked to the canonical Work after identity resolution."""
+
+    __tablename__ = "retrieval_hits"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    retrieval_run_id: Mapped[int] = mapped_column(ForeignKey("retrieval_runs.id"), index=True)
+    archive_id: Mapped[int] = mapped_column(ForeignKey("topic_archives.id"), index=True)
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    external_id: Mapped[str] = mapped_column(String(255), index=True)
+    query_id: Mapped[str] = mapped_column(String(64), index=True)
+    rank: Mapped[int] = mapped_column(Integer)
+    work_id: Mapped[Optional[int]] = mapped_column(ForeignKey("works.id"), index=True)
+    raw_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "retrieval_run_id",
+            "source",
+            "external_id",
+            "query_id",
+            name="uq_retrieval_hit_observation",
+        ),
+    )

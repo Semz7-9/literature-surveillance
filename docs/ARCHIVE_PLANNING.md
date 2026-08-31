@@ -63,5 +63,5 @@ input refs 与 output hash。Ledger 不保存 API key、秘密或全文。
 ```
 
 当前检查 planning 结构、已知术语、计划来源、ReviewItem 上限、建议/决策分离以及关闭
-重开后的持久化。Landmark recall、community recall、FalseBranchRate 和 ClaimFaithfulness
-将在 Batch B/C 有真实 corpus 与 claims 后加入，当前不虚构这些指标。
+重开后的持久化。Landmark recall 已在 Batch B1 使用真实双源 Corpus 验收；community recall、
+FalseBranchRate 和 ClaimFaithfulness 仍分别留给 Batch B2/C，不提前虚构。
